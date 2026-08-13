@@ -111,8 +111,8 @@ export default async function Home() {
           <h3>Always on</h3>
           <p>
             The dashboard re-scans automatically every 15 minutes. A scheduled job runs every
-            weekday before the market opens (8:45 AM ET) and texts the top picks straight to
-            your phone via SMS.
+            weekday before the market opens (8:45 AM ET) and pushes the top picks straight to
+            your phone — free via ntfy or Telegram, or by SMS via Twilio.
           </p>
         </div>
         <div>
