@@ -1,10 +1,13 @@
 // Thin wrappers around yahoo-finance2 with batching, concurrency limits,
 // and defensive error handling (a single bad symbol must never kill a scan).
 
-import yahooFinance from "yahoo-finance2";
+import YahooFinance from "yahoo-finance2";
 import type { Candle } from "./indicators";
 
-yahooFinance.suppressNotices(["yahooSurvey"]);
+const yahooFinance = new YahooFinance({
+  suppressNotices: ["yahooSurvey"],
+  validation: { logErrors: false, logOptionsErrors: false },
+});
 
 export interface Snapshot {
   symbol: string;
@@ -63,12 +66,14 @@ export async function fetchSnapshots(symbols: string[]): Promise<Snapshot[]> {
   return out;
 }
 
-// Daily candles for roughly the past `days` calendar days.
+// Daily candles for roughly the past `days` calendar days. Tries the library
+// first; if that fails (cookie/crumb changes, validation errors), falls back
+// to Yahoo's public chart REST endpoint, which needs no authentication.
 export async function fetchDailyCandles(symbol: string, days: number): Promise<Candle[]> {
   const period1 = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   try {
     const res = await yahooFinance.chart(symbol, { period1, interval: "1d" });
-    return (res.quotes ?? [])
+    const candles = (res.quotes ?? [])
       .filter(
         (q) =>
           q.close != null && q.open != null && q.high != null && q.low != null && q.volume != null,
@@ -81,6 +86,55 @@ export async function fetchDailyCandles(symbol: string, days: number): Promise<C
         close: q.close as number,
         volume: q.volume as number,
       }));
+    if (candles.length > 0) return candles;
+  } catch {
+    // fall through to the raw endpoint
+  }
+  return fetchDailyCandlesRaw(symbol, days);
+}
+
+async function fetchDailyCandlesRaw(symbol: string, days: number): Promise<Candle[]> {
+  const period1 = Math.floor((Date.now() - days * 24 * 60 * 60 * 1000) / 1000);
+  const period2 = Math.floor(Date.now() / 1000);
+  const url =
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}` +
+    `?period1=${period1}&period2=${period2}&interval=1d&events=div%2Csplit`;
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; StockWizard/1.0)" },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = (await res.json()) as {
+      chart?: {
+        result?: {
+          timestamp?: number[];
+          indicators?: {
+            quote?: {
+              open?: (number | null)[];
+              high?: (number | null)[];
+              low?: (number | null)[];
+              close?: (number | null)[];
+              volume?: (number | null)[];
+            }[];
+          };
+        }[];
+      };
+    };
+    const result = json.chart?.result?.[0];
+    const ts = result?.timestamp ?? [];
+    const q = result?.indicators?.quote?.[0];
+    if (!q) return [];
+    const out: Candle[] = [];
+    for (let i = 0; i < ts.length; i++) {
+      const open = q.open?.[i];
+      const high = q.high?.[i];
+      const low = q.low?.[i];
+      const close = q.close?.[i];
+      const volume = q.volume?.[i];
+      if (open == null || high == null || low == null || close == null || volume == null) continue;
+      out.push({ date: new Date(ts[i] * 1000), open, high, low, close, volume });
+    }
+    return out;
   } catch (err) {
     console.error(`chart failed for ${symbol}:`, (err as Error).message);
     return [];
@@ -125,10 +179,9 @@ export async function fetchScreenerSymbols(
   count: number,
 ): Promise<string[]> {
   try {
-    const res = await yahooFinance.screener(
-      { scrIds, count },
-      { validateResult: false },
-    );
+    const res = (await yahooFinance.screener({ scrIds, count }, undefined, {
+      validateResult: false,
+    })) as { quotes?: { symbol?: string }[] };
     return (res.quotes ?? [])
       .map((q: { symbol?: string }) => q.symbol)
       .filter((s: string | undefined): s is string => typeof s === "string" && !s.includes("."));
