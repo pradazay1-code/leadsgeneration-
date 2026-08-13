@@ -191,6 +191,110 @@ export async function fetchScreenerSymbols(
   }
 }
 
+// Extra fundamentals + analyst context for the deep-dive page. Everything is
+// optional — a failed call degrades to nulls, never an error.
+export interface SummaryExtras {
+  sector: string | null;
+  industry: string | null;
+  beta: number | null;
+  dividendYieldPct: number | null;
+  targetMeanPrice: number | null;
+  recommendationMean: number | null; // 1 = strong buy … 5 = sell
+  recommendationKey: string | null;
+  numberOfAnalystOpinions: number | null;
+  profitMarginsPct: number | null;
+  revenueGrowthPct: number | null;
+}
+
+export async function fetchSummaryExtras(symbol: string): Promise<SummaryExtras> {
+  const empty: SummaryExtras = {
+    sector: null,
+    industry: null,
+    beta: null,
+    dividendYieldPct: null,
+    targetMeanPrice: null,
+    recommendationMean: null,
+    recommendationKey: null,
+    numberOfAnalystOpinions: null,
+    profitMarginsPct: null,
+    revenueGrowthPct: null,
+  };
+  try {
+    const res = (await yahooFinance.quoteSummary(
+      symbol,
+      { modules: ["assetProfile", "financialData", "summaryDetail"] },
+      { validateResult: false },
+    )) as {
+      assetProfile?: { sector?: string; industry?: string };
+      summaryDetail?: { beta?: number; dividendYield?: number };
+      financialData?: {
+        targetMeanPrice?: number;
+        recommendationMean?: number;
+        recommendationKey?: string;
+        numberOfAnalystOpinions?: number;
+        profitMargins?: number;
+        revenueGrowth?: number;
+      };
+    };
+    const fd = res.financialData ?? {};
+    const sd = res.summaryDetail ?? {};
+    const ap = res.assetProfile ?? {};
+    return {
+      sector: ap.sector ?? null,
+      industry: ap.industry ?? null,
+      beta: num(sd.beta),
+      dividendYieldPct: num(sd.dividendYield) !== null ? sd.dividendYield! * 100 : null,
+      targetMeanPrice: num(fd.targetMeanPrice),
+      recommendationMean: num(fd.recommendationMean),
+      recommendationKey: fd.recommendationKey ?? null,
+      numberOfAnalystOpinions: num(fd.numberOfAnalystOpinions),
+      profitMarginsPct: num(fd.profitMargins) !== null ? fd.profitMargins! * 100 : null,
+      revenueGrowthPct: num(fd.revenueGrowth) !== null ? fd.revenueGrowth! * 100 : null,
+    };
+  } catch (err) {
+    console.error(`quoteSummary failed for ${symbol}:`, (err as Error).message);
+    return empty;
+  }
+}
+
+// Ticker search for the search box.
+export interface SearchHit {
+  symbol: string;
+  name: string;
+  exchange: string;
+  type: string;
+}
+
+export async function searchSymbols(query: string): Promise<SearchHit[]> {
+  try {
+    const res = (await yahooFinance.search(
+      query,
+      { quotesCount: 8, newsCount: 0 },
+      { validateResult: false },
+    )) as {
+      quotes?: {
+        symbol?: string;
+        shortname?: string;
+        longname?: string;
+        exchDisp?: string;
+        quoteType?: string;
+        typeDisp?: string;
+      }[];
+    };
+    return (res.quotes ?? [])
+      .filter((q) => q.symbol && (q.quoteType === "EQUITY" || q.quoteType === "ETF"))
+      .map((q) => ({
+        symbol: q.symbol!,
+        name: q.shortname ?? q.longname ?? q.symbol!,
+        exchange: q.exchDisp ?? "",
+        type: q.typeDisp ?? q.quoteType ?? "",
+      }));
+  } catch (err) {
+    console.error(`search failed for "${query}":`, (err as Error).message);
+    return [];
+  }
+}
+
 // Run async jobs with bounded concurrency.
 export async function mapLimit<T, R>(
   items: T[],

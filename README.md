@@ -13,6 +13,22 @@ Every pick gets a transparent **0–100 score** with the exact signals and warni
 it, and the top picks are **pushed to your phone** before the market opens — free
 forever via [ntfy](https://ntfy.sh) or Telegram, or by SMS via Twilio if you prefer.
 
+Beyond the daily scan, every stock is **clickable** — and you can **search any ticker** —
+to open a full analysis page with:
+
+- **Interactive chart**: 1M–2Y ranges, 50/200-day moving averages, volume, and a
+  crosshair tooltip with full OHLC data.
+- **The Verdict**: short-term, long-term, and risk assessments in plain English, plus
+  Wall Street analyst targets when available.
+- **Strict quality checklist**: eight named pass/fail checks (data depth, liquidity,
+  trend, alignment, volatility, drawdown, profitability, analyst coverage) that drive a
+  High/Medium/Low **confidence grade** — High requires zero failures.
+- **16 key metrics**: returns vs the S&P 500, annualized volatility, beta, max drawdown,
+  RSI, ATR, valuation, margins, and more.
+- **Investment projection**: "what if I invest $50 a week for 5 years?" — conservative /
+  expected / optimistic scenarios computed from the stock's own dampened historical
+  return and real volatility, always shown alongside total contributions.
+
 ## How it works
 
 - **Data**: live quotes + 18 months of daily candles from Yahoo Finance (free, no API key),

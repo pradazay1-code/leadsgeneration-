@@ -1,4 +1,5 @@
 import PickCard from "@/components/PickCard";
+import SearchBox from "@/components/SearchBox";
 import { runScan, ScanResult } from "@/lib/scanner";
 
 // Re-scan at most every 15 minutes; every visitor in between gets the cached page.
@@ -29,6 +30,7 @@ export default async function Home() {
           <h1>📈 Stock Wizard</h1>
           <span className="tag">daily trades · long-term compounders</span>
         </div>
+        <SearchBox />
         <div className="meta">
           {updated ? (
             <>

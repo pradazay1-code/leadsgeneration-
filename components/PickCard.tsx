@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { Pick } from "@/lib/scoring";
 
 function Sparkline({ values, label }: { values: number[]; label: string }) {
@@ -41,6 +42,7 @@ export default function PickCard({ pick }: { pick: Pick }) {
   const chgClass = pick.changePercent >= 0 ? "up" : "down";
   const chgSign = pick.changePercent >= 0 ? "+" : "";
   return (
+    <Link href={`/stock/${encodeURIComponent(pick.symbol)}`} className="card-link">
     <article className="card">
       <div className="card-top">
         <div>
@@ -83,6 +85,8 @@ export default function PickCard({ pick }: { pick: Pick }) {
       </ul>
 
       <div className="thesis">{pick.thesis}</div>
+      <div className="card-cta">Full analysis, chart &amp; projections →</div>
     </article>
+    </Link>
   );
 }
