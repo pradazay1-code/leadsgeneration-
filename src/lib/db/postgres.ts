@@ -1,0 +1,463 @@
+import "server-only";
+import postgres, { type Sql } from "postgres";
+import type {
+  Lead,
+  LeadFilters,
+  LeadSort,
+  LeadStats,
+  LeadStatus,
+  NicheId,
+  PresenceTier,
+  ScanRunSummary,
+  ScoreSignal,
+  Territory,
+} from "../types";
+import { LEAD_STATUSES } from "../types";
+import { TIER_ORDER } from "../scoring";
+import type { Facets, LeadPage, LeadPatch, LeadUpsert, Store, UpsertResult } from "./store";
+
+export function connectionString(): string | null {
+  return (
+    process.env.POSTGRES_URL ??
+    process.env.DATABASE_URL ??
+    process.env.POSTGRES_PRISMA_URL ??
+    null
+  );
+}
+
+const globalRef = globalThis as unknown as { __leadsignalSql?: Sql };
+
+function client(): Sql {
+  if (!globalRef.__leadsignalSql) {
+    const url = connectionString();
+    if (!url) throw new Error("No POSTGRES_URL / DATABASE_URL configured");
+    globalRef.__leadsignalSql = postgres(url, {
+      // Serverless functions are short-lived; a small pool avoids exhausting
+      // connection limits on hosted Postgres.
+      max: 3,
+      idle_timeout: 20,
+      connect_timeout: 15,
+      prepare: false,
+      ssl: url.includes("sslmode=disable") ? false : "require",
+    });
+  }
+  return globalRef.__leadsignalSql;
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type Row = Record<string, any>;
+
+/**
+ * postgres.js types `sql.json()` against its own narrow JSONValue shape, which
+ * rejects plain interface arrays like ScoreSignal[]. Everything we pass here is
+ * genuinely JSON-serialisable, so widen it in one place.
+ */
+function jsonb(value: unknown) {
+  return client().json(value as never);
+}
+
+function toLead(r: Row): Lead {
+  return {
+    id: String(r.id),
+    sourceId: r.source_id,
+    source: r.source,
+    name: r.name,
+    niche: r.niche as NicheId,
+    phone: r.phone,
+    website: r.website,
+    websiteHost: r.website_host,
+    address: r.address,
+    city: r.city,
+    state: r.state,
+    postalCode: r.postal_code,
+    lat: r.lat === null ? null : Number(r.lat),
+    lng: r.lng === null ? null : Number(r.lng),
+    mapsUrl: r.maps_url,
+    rating: r.rating === null ? null : Number(r.rating),
+    reviewCount: Number(r.review_count ?? 0),
+    photoCount: Number(r.photo_count ?? 0),
+    hasHours: Boolean(r.has_hours),
+    businessStatus: r.business_status,
+    categories: (r.categories ?? []) as string[],
+    score: Number(r.score ?? 0),
+    tier: r.tier as PresenceTier,
+    signals: (r.signals ?? []) as ScoreSignal[],
+    status: r.status as LeadStatus,
+    notes: r.notes ?? "",
+    discoveredAt: new Date(r.discovered_at).toISOString(),
+    lastSeenAt: new Date(r.last_seen_at).toISOString(),
+    territoryId: r.territory_id ? String(r.territory_id) : null,
+  };
+}
+
+function toTerritory(r: Row): Territory {
+  return {
+    id: String(r.id),
+    label: r.label,
+    area: r.area,
+    state: r.state,
+    niches: (r.niches ?? []) as NicheId[],
+    enabled: Boolean(r.enabled),
+    createdAt: new Date(r.created_at).toISOString(),
+    lastScannedAt: r.last_scanned_at ? new Date(r.last_scanned_at).toISOString() : null,
+    leadsFound: Number(r.leads_found ?? 0),
+  };
+}
+
+export class PostgresStore implements Store {
+  readonly kind = "postgres" as const;
+  private ready: Promise<void> | null = null;
+
+  async init(): Promise<void> {
+    if (!this.ready) this.ready = this.migrate();
+    return this.ready;
+  }
+
+  private async migrate(): Promise<void> {
+    const sql = client();
+    await sql`
+      CREATE TABLE IF NOT EXISTS territories (
+        id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        label           text        NOT NULL,
+        area            text        NOT NULL,
+        state           text        NOT NULL DEFAULT '',
+        niches          jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        enabled         boolean     NOT NULL DEFAULT true,
+        created_at      timestamptz NOT NULL DEFAULT now(),
+        last_scanned_at timestamptz,
+        leads_found     integer     NOT NULL DEFAULT 0
+      )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS leads (
+        id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        source_id       text        NOT NULL UNIQUE,
+        source          text        NOT NULL DEFAULT 'google_places',
+        name            text        NOT NULL,
+        niche           text        NOT NULL,
+        phone           text,
+        website         text,
+        website_host    text,
+        address         text,
+        city            text,
+        state           text,
+        postal_code     text,
+        lat             double precision,
+        lng             double precision,
+        maps_url        text,
+        rating          double precision,
+        review_count    integer     NOT NULL DEFAULT 0,
+        photo_count     integer     NOT NULL DEFAULT 0,
+        has_hours       boolean     NOT NULL DEFAULT false,
+        business_status text,
+        categories      jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        score           integer     NOT NULL DEFAULT 0,
+        tier            text        NOT NULL DEFAULT 'weak',
+        signals         jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        status          text        NOT NULL DEFAULT 'new',
+        notes           text        NOT NULL DEFAULT '',
+        discovered_at   timestamptz NOT NULL DEFAULT now(),
+        last_seen_at    timestamptz NOT NULL DEFAULT now(),
+        territory_id    uuid REFERENCES territories(id) ON DELETE SET NULL
+      )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS scan_runs (
+        id                   bigserial PRIMARY KEY,
+        started_at           timestamptz NOT NULL,
+        finished_at          timestamptz NOT NULL,
+        territories_scanned  integer NOT NULL DEFAULT 0,
+        places_inspected     integer NOT NULL DEFAULT 0,
+        new_leads            integer NOT NULL DEFAULT 0,
+        updated_leads        integer NOT NULL DEFAULT 0,
+        skipped              integer NOT NULL DEFAULT 0,
+        errors               jsonb   NOT NULL DEFAULT '[]'::jsonb,
+        demo_mode            boolean NOT NULL DEFAULT false
+      )`;
+
+    await sql`CREATE INDEX IF NOT EXISTS leads_score_idx ON leads (score DESC)`;
+    await sql`CREATE INDEX IF NOT EXISTS leads_discovered_idx ON leads (discovered_at DESC)`;
+    await sql`CREATE INDEX IF NOT EXISTS leads_niche_idx ON leads (niche)`;
+    await sql`CREATE INDEX IF NOT EXISTS leads_status_idx ON leads (status)`;
+    await sql`CREATE INDEX IF NOT EXISTS leads_tier_idx ON leads (tier)`;
+  }
+
+  async isDemo(): Promise<boolean> {
+    return false;
+  }
+
+  private whereClause(f: LeadFilters) {
+    const sql = client();
+    const conds: ReturnType<Sql>[] = [];
+
+    if (f.niches?.length) conds.push(sql`niche = ANY(${f.niches})`);
+    if (f.tiers?.length) conds.push(sql`tier = ANY(${f.tiers})`);
+    if (f.statuses?.length) conds.push(sql`status = ANY(${f.statuses})`);
+    if (f.states?.length) conds.push(sql`state = ANY(${f.states})`);
+    if (f.cities?.length) conds.push(sql`city = ANY(${f.cities})`);
+    if (typeof f.minScore === "number") conds.push(sql`score >= ${f.minScore}`);
+    if (typeof f.maxScore === "number") conds.push(sql`score <= ${f.maxScore}`);
+    if (typeof f.maxReviews === "number") conds.push(sql`review_count <= ${f.maxReviews}`);
+    if (f.hasWebsite === true) conds.push(sql`website IS NOT NULL AND website <> ''`);
+    if (f.hasWebsite === false) conds.push(sql`(website IS NULL OR website = '')`);
+    if (f.hasPhone === true) conds.push(sql`phone IS NOT NULL AND phone <> ''`);
+    if (f.hasPhone === false) conds.push(sql`(phone IS NULL OR phone = '')`);
+    if (typeof f.discoveredWithinDays === "number") {
+      conds.push(
+        sql`discovered_at >= now() - (${f.discoveredWithinDays} || ' days')::interval`,
+      );
+    }
+    if (f.q) {
+      const like = `%${f.q}%`;
+      conds.push(
+        sql`(name ILIKE ${like} OR city ILIKE ${like} OR address ILIKE ${like} OR phone ILIKE ${like} OR website_host ILIKE ${like} OR notes ILIKE ${like})`,
+      );
+    }
+
+    if (!conds.length) return sql`TRUE`;
+    return conds.reduce((acc, cond) => sql`${acc} AND ${cond}`);
+  }
+
+  private orderClause(sort: LeadSort = "score_desc") {
+    const sql = client();
+    switch (sort) {
+      case "score_asc":
+        return sql`score ASC, review_count DESC`;
+      case "newest":
+        return sql`discovered_at DESC`;
+      case "oldest":
+        return sql`discovered_at ASC`;
+      case "reviews_asc":
+        return sql`review_count ASC, score DESC`;
+      case "reviews_desc":
+        return sql`review_count DESC`;
+      case "name_asc":
+        return sql`name ASC`;
+      default:
+        return sql`score DESC, review_count ASC`;
+    }
+  }
+
+  async listLeads(filters: LeadFilters): Promise<LeadPage> {
+    await this.init();
+    const sql = client();
+    const where = this.whereClause(filters);
+    const order = this.orderClause(filters.sort);
+    const limit = filters.limit ?? 100;
+    const offset = filters.offset ?? 0;
+
+    const [rows, counted] = await Promise.all([
+      sql<Row[]>`SELECT * FROM leads WHERE ${where} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`,
+      sql<Row[]>`SELECT count(*)::int AS n FROM leads WHERE ${where}`,
+    ]);
+
+    return { rows: rows.map(toLead), total: Number(counted[0]?.n ?? 0) };
+  }
+
+  async getLead(id: string): Promise<Lead | null> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`SELECT * FROM leads WHERE id = ${id}`;
+    return rows[0] ? toLead(rows[0]) : null;
+  }
+
+  async upsertLeads(incoming: LeadUpsert[]): Promise<UpsertResult> {
+    await this.init();
+    if (!incoming.length) return { inserted: 0, updated: 0 };
+    const sql = client();
+
+    let inserted = 0;
+    let updated = 0;
+
+    for (const l of incoming) {
+      // `xmax = 0` is the standard Postgres trick for telling an INSERT apart
+      // from an ON CONFLICT UPDATE in the RETURNING clause.
+      const rows = await sql<Row[]>`
+        INSERT INTO leads (
+          source_id, source, name, niche, phone, website, website_host, address,
+          city, state, postal_code, lat, lng, maps_url, rating, review_count,
+          photo_count, has_hours, business_status, categories, score, tier,
+          signals, last_seen_at, territory_id
+        ) VALUES (
+          ${l.sourceId}, ${l.source}, ${l.name}, ${l.niche}, ${l.phone}, ${l.website},
+          ${l.websiteHost}, ${l.address}, ${l.city}, ${l.state}, ${l.postalCode},
+          ${l.lat}, ${l.lng}, ${l.mapsUrl}, ${l.rating}, ${l.reviewCount},
+          ${l.photoCount}, ${l.hasHours}, ${l.businessStatus},
+          ${jsonb(l.categories)}, ${l.score}, ${l.tier}, ${jsonb(l.signals)},
+          ${l.lastSeenAt}, ${l.territoryId}
+        )
+        ON CONFLICT (source_id) DO UPDATE SET
+          name = EXCLUDED.name,
+          phone = EXCLUDED.phone,
+          website = EXCLUDED.website,
+          website_host = EXCLUDED.website_host,
+          address = EXCLUDED.address,
+          city = EXCLUDED.city,
+          state = EXCLUDED.state,
+          postal_code = EXCLUDED.postal_code,
+          lat = EXCLUDED.lat,
+          lng = EXCLUDED.lng,
+          maps_url = EXCLUDED.maps_url,
+          rating = EXCLUDED.rating,
+          review_count = EXCLUDED.review_count,
+          photo_count = EXCLUDED.photo_count,
+          has_hours = EXCLUDED.has_hours,
+          business_status = EXCLUDED.business_status,
+          categories = EXCLUDED.categories,
+          score = EXCLUDED.score,
+          tier = EXCLUDED.tier,
+          signals = EXCLUDED.signals,
+          last_seen_at = EXCLUDED.last_seen_at
+        RETURNING (xmax = 0) AS is_insert`;
+
+      if (rows[0]?.is_insert) inserted += 1;
+      else updated += 1;
+    }
+
+    return { inserted, updated };
+  }
+
+  async patchLead(id: string, patch: LeadPatch): Promise<Lead | null> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      UPDATE leads SET
+        status = COALESCE(${patch.status ?? null}, status),
+        notes  = COALESCE(${patch.notes ?? null}, notes)
+      WHERE id = ${id}
+      RETURNING *`;
+    return rows[0] ? toLead(rows[0]) : null;
+  }
+
+  async deleteLead(id: string): Promise<boolean> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`DELETE FROM leads WHERE id = ${id} RETURNING id`;
+    return rows.length > 0;
+  }
+
+  async stats(): Promise<LeadStats> {
+    await this.init();
+    const sql = client();
+
+    const [totals, tiers, statuses, niches] = await Promise.all([
+      sql<Row[]>`
+        SELECT
+          count(*)::int AS total,
+          count(*) FILTER (WHERE discovered_at >= now() - interval '1 day')::int AS new_today,
+          count(*) FILTER (WHERE discovered_at >= now() - interval '7 days')::int AS new_week,
+          count(*) FILTER (WHERE status = 'new')::int AS untouched,
+          count(*) FILTER (WHERE website IS NULL OR website = '')::int AS no_website,
+          COALESCE(round(avg(score)), 0)::int AS avg_score
+        FROM leads`,
+      sql<Row[]>`SELECT tier, count(*)::int AS n FROM leads GROUP BY tier`,
+      sql<Row[]>`SELECT status, count(*)::int AS n FROM leads GROUP BY status`,
+      sql<Row[]>`SELECT niche, count(*)::int AS n FROM leads GROUP BY niche`,
+    ]);
+
+    const byTier = Object.fromEntries(TIER_ORDER.map((t) => [t, 0])) as Record<PresenceTier, number>;
+    for (const r of tiers) if (r.tier in byTier) byTier[r.tier as PresenceTier] = Number(r.n);
+
+    const byStatus = Object.fromEntries(LEAD_STATUSES.map((s) => [s, 0])) as Record<LeadStatus, number>;
+    for (const r of statuses) if (r.status in byStatus) byStatus[r.status as LeadStatus] = Number(r.n);
+
+    const byNiche: Record<NicheId, number> = { junk_removal: 0, real_estate: 0 };
+    for (const r of niches) if (r.niche in byNiche) byNiche[r.niche as NicheId] = Number(r.n);
+
+    const t = totals[0] ?? {};
+    return {
+      total: Number(t.total ?? 0),
+      newToday: Number(t.new_today ?? 0),
+      newThisWeek: Number(t.new_week ?? 0),
+      untouched: Number(t.untouched ?? 0),
+      noWebsite: Number(t.no_website ?? 0),
+      byTier,
+      byStatus,
+      byNiche,
+      avgScore: Number(t.avg_score ?? 0),
+    };
+  }
+
+  async facets(): Promise<Facets> {
+    await this.init();
+    const sql = client();
+    const [states, cities] = await Promise.all([
+      sql<Row[]>`SELECT DISTINCT state FROM leads WHERE state IS NOT NULL AND state <> '' ORDER BY state`,
+      sql<Row[]>`SELECT DISTINCT city FROM leads WHERE city IS NOT NULL AND city <> '' ORDER BY city`,
+    ]);
+    return { states: states.map((r) => r.state), cities: cities.map((r) => r.city) };
+  }
+
+  async listTerritories(): Promise<Territory[]> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`SELECT * FROM territories ORDER BY label ASC`;
+    return rows.map(toTerritory);
+  }
+
+  async createTerritory(
+    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound">,
+  ): Promise<Territory> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      INSERT INTO territories (label, area, state, niches, enabled)
+      VALUES (${t.label}, ${t.area}, ${t.state}, ${jsonb(t.niches)}, ${t.enabled})
+      RETURNING *`;
+    return toTerritory(rows[0]);
+  }
+
+  async updateTerritory(id: string, patch: Partial<Territory>): Promise<Territory | null> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      UPDATE territories SET
+        label           = COALESCE(${patch.label ?? null}, label),
+        area            = COALESCE(${patch.area ?? null}, area),
+        state           = COALESCE(${patch.state ?? null}, state),
+        niches          = COALESCE(${patch.niches ? jsonb(patch.niches) : null}, niches),
+        enabled         = COALESCE(${patch.enabled ?? null}, enabled),
+        last_scanned_at = COALESCE(${patch.lastScannedAt ?? null}, last_scanned_at),
+        leads_found     = COALESCE(${patch.leadsFound ?? null}, leads_found)
+      WHERE id = ${id}
+      RETURNING *`;
+    return rows[0] ? toTerritory(rows[0]) : null;
+  }
+
+  async deleteTerritory(id: string): Promise<boolean> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`DELETE FROM territories WHERE id = ${id} RETURNING id`;
+    return rows.length > 0;
+  }
+
+  async recordScan(s: ScanRunSummary): Promise<void> {
+    await this.init();
+    const sql = client();
+    await sql`
+      INSERT INTO scan_runs (
+        started_at, finished_at, territories_scanned, places_inspected,
+        new_leads, updated_leads, skipped, errors, demo_mode
+      ) VALUES (
+        ${s.startedAt}, ${s.finishedAt}, ${s.territoriesScanned}, ${s.placesInspected},
+        ${s.newLeads}, ${s.updatedLeads}, ${s.skipped}, ${jsonb(s.errors)}, ${s.demoMode}
+      )`;
+  }
+
+  async recentScans(limit = 10): Promise<ScanRunSummary[]> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`SELECT * FROM scan_runs ORDER BY started_at DESC LIMIT ${limit}`;
+    return rows.map((r) => ({
+      startedAt: new Date(r.started_at).toISOString(),
+      finishedAt: new Date(r.finished_at).toISOString(),
+      territoriesScanned: Number(r.territories_scanned),
+      placesInspected: Number(r.places_inspected),
+      newLeads: Number(r.new_leads),
+      updatedLeads: Number(r.updated_leads),
+      skipped: Number(r.skipped),
+      errors: (r.errors ?? []) as string[],
+      demoMode: Boolean(r.demo_mode),
+    }));
+  }
+}
