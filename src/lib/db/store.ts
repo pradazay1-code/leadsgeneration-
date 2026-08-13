@@ -50,11 +50,18 @@ export interface Store {
 
   listTerritories(): Promise<Territory[]>;
   createTerritory(
-    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound">,
+    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound" | "lat" | "lng">,
   ): Promise<Territory>;
   updateTerritory(id: string, patch: Partial<Territory>): Promise<Territory | null>;
   deleteTerritory(id: string): Promise<boolean>;
 
   recordScan(summary: ScanRunSummary): Promise<void>;
   recentScans(limit?: number): Promise<ScanRunSummary[]>;
+
+  /**
+   * Small server-side key/value store for user preferences (saved filter
+   * views etc.), so the workspace looks identical from any device.
+   */
+  getPref(key: string): Promise<unknown | null>;
+  setPref(key: string, value: unknown): Promise<void>;
 }

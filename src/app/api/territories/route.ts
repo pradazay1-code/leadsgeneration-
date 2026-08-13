@@ -40,6 +40,9 @@ export async function POST(request: Request) {
   const inferredState = area.match(/,\s*([A-Za-z]{2})\s*$/)?.[1]?.toUpperCase() ?? "";
   const state = typeof body.state === "string" && body.state.trim() ? body.state.trim().toUpperCase() : inferredState;
 
+  const radiusRaw = Number((body as { radiusKm?: unknown }).radiusKm);
+  const radiusKm = Number.isFinite(radiusRaw) ? Math.min(Math.max(Math.round(radiusRaw), 2), 50) : 15;
+
   try {
     const store = await getStore();
     const territory = await store.createTerritory({
@@ -47,6 +50,7 @@ export async function POST(request: Request) {
       area: area.slice(0, 120),
       state,
       niches,
+      radiusKm,
       enabled: body.enabled === undefined ? true : Boolean(body.enabled),
     });
     return NextResponse.json({ territory }, { status: 201 });

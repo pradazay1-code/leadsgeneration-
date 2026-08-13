@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
-import { isPlacesConfigured } from "@/lib/places";
+import { providerStatuses } from "@/lib/sources";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +17,7 @@ export async function GET() {
       stats,
       recentScans: scans,
       demoData: demo,
-      placesConfigured: isPlacesConfigured(),
+      providers: providerStatuses(),
       storeKind: store.kind,
     });
   } catch (err) {

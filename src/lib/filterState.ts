@@ -1,10 +1,11 @@
-import type { LeadSort, LeadStatus, NicheId, PresenceTier } from "./types";
+import type { LeadSort, LeadStatus, NicheId, PresenceTier, SourceId } from "./types";
 
 export interface FilterState {
   q: string;
   niches: NicheId[];
   tiers: PresenceTier[];
   statuses: LeadStatus[];
+  sources: SourceId[];
   states: string[];
   cities: string[];
   minScore: number;
@@ -26,6 +27,7 @@ export const DEFAULT_FILTERS: FilterState = {
   niches: [],
   tiers: ["none", "minimal", "weak"],
   statuses: [],
+  sources: [],
   states: [],
   cities: [],
   minScore: 35,
@@ -42,6 +44,7 @@ export function toQuery(f: FilterState): URLSearchParams {
   f.niches.forEach((v) => p.append("niche", v));
   f.tiers.forEach((v) => p.append("tier", v));
   f.statuses.forEach((v) => p.append("status", v));
+  f.sources.forEach((v) => p.append("source", v));
   f.states.forEach((v) => p.append("state", v));
   f.cities.forEach((v) => p.append("city", v));
   if (f.minScore > 0) p.set("minScore", String(f.minScore));
@@ -65,6 +68,7 @@ export function countActive(f: FilterState): number {
     n += 1;
   }
   if (f.statuses.length) n += 1;
+  if (f.sources.length) n += 1;
   if (f.states.length) n += 1;
   if (f.cities.length) n += 1;
   if (f.minScore !== DEFAULT_FILTERS.minScore) n += 1;
@@ -75,22 +79,31 @@ export function countActive(f: FilterState): number {
   return n;
 }
 
-const STORAGE_KEY = "leadsignal.filters.v1";
+/** Merge a stored blob over the defaults so old shapes can't break the UI. */
+export function hydrateFilters(raw: unknown): FilterState {
+  if (!raw || typeof raw !== "object") return DEFAULT_FILTERS;
+  return { ...DEFAULT_FILTERS, ...(raw as Partial<FilterState>) };
+}
 
-export function loadFilters(): FilterState {
+const STORAGE_KEY = "leadsignal.filters.v2";
+
+/**
+ * localStorage is only an instant-paint cache; the server copy (via
+ * /api/prefs) is the source of truth so the same view follows the user to any
+ * device.
+ */
+export function loadCachedFilters(): FilterState {
   if (typeof window === "undefined") return DEFAULT_FILTERS;
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_FILTERS;
-    // Spread over the defaults so a stored blob from an older version can't
-    // leave a required key undefined.
-    return { ...DEFAULT_FILTERS, ...(JSON.parse(raw) as Partial<FilterState>) };
+    return hydrateFilters(JSON.parse(raw));
   } catch {
     return DEFAULT_FILTERS;
   }
 }
 
-export function saveFilters(f: FilterState): void {
+export function cacheFilters(f: FilterState): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(f));

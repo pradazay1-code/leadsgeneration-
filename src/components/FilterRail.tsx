@@ -5,8 +5,10 @@ import { cn } from "@/lib/cn";
 import { NICHE_LIST } from "@/lib/niches";
 import { TIER_META, TIER_ORDER } from "@/lib/scoring";
 import { countActive, type FilterState } from "@/lib/filterState";
-import { LEAD_STATUSES } from "@/lib/types";
-import { Button, Chip, Label, STATUS_META, inputClass } from "./ui";
+import { LEAD_STATUSES, type SourceId } from "@/lib/types";
+import { Button, Chip, Label, SOURCE_META, STATUS_META, inputClass } from "./ui";
+
+const FILTERABLE_SOURCES: SourceId[] = ["bizdata", "osm", "yelp", "google_places"];
 
 interface Facets {
   states: string[];
@@ -233,6 +235,24 @@ export function FilterRail({
             </Chip>
           ))}
         </div>
+      </Section>
+
+      <Section title="Found via">
+        <div className="flex flex-wrap gap-1.5">
+          {FILTERABLE_SOURCES.map((s) => (
+            <Chip
+              key={s}
+              active={filters.sources.includes(s)}
+              onClick={() => patch({ sources: toggleIn(filters.sources, s) })}
+            >
+              {SOURCE_META[s].label}
+            </Chip>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-3">
+          Leads seen on any selected platform. A lead found on only one platform is often the
+          least visible — and the best target.
+        </p>
       </Section>
 
       {facets.states.length > 1 ? (

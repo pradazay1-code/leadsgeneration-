@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { LeadFilters, LeadStats, ScanRunSummary, Territory, Lead } from "../types";
+import type { LeadFilters, ScanRunSummary, Territory, Lead, LeadStats } from "../types";
 import { buildDemoLeads, buildDemoTerritories } from "./demo";
 import { computeStats, matchesFilters, sortLeads } from "./filters";
 import type { Facets, LeadPage, LeadPatch, LeadUpsert, Store, UpsertResult } from "./store";
@@ -8,6 +8,7 @@ interface MemoryState {
   leads: Map<string, Lead>;
   territories: Map<string, Territory>;
   scans: ScanRunSummary[];
+  prefs: Map<string, unknown>;
   seeded: boolean;
 }
 
@@ -23,6 +24,7 @@ function state(): MemoryState {
       leads: new Map(),
       territories: new Map(),
       scans: [],
+      prefs: new Map(),
       seeded: false,
     };
   }
@@ -72,7 +74,14 @@ export class MemoryStore implements Store {
       const existing = bySource.get(row.sourceId);
       if (existing) {
         // Preserve everything the user owns: status, notes, discovery date.
-        s.leads.set(existing.id, { ...existing, ...row, id: existing.id, status: existing.status, notes: existing.notes, discoveredAt: existing.discoveredAt });
+        s.leads.set(existing.id, {
+          ...existing,
+          ...row,
+          id: existing.id,
+          status: existing.status,
+          notes: existing.notes,
+          discoveredAt: existing.discoveredAt,
+        });
         updated += 1;
       } else {
         const id = randomUUID();
@@ -128,11 +137,13 @@ export class MemoryStore implements Store {
   }
 
   async createTerritory(
-    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound">,
+    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound" | "lat" | "lng">,
   ): Promise<Territory> {
     const territory: Territory = {
       ...t,
       id: randomUUID(),
+      lat: null,
+      lng: null,
       createdAt: new Date().toISOString(),
       lastScannedAt: null,
       leadsFound: 0,
@@ -162,5 +173,13 @@ export class MemoryStore implements Store {
 
   async recentScans(limit = 10): Promise<ScanRunSummary[]> {
     return state().scans.slice(0, limit);
+  }
+
+  async getPref(key: string): Promise<unknown | null> {
+    return state().prefs.get(key) ?? null;
+  }
+
+  async setPref(key: string, value: unknown): Promise<void> {
+    state().prefs.set(key, value);
   }
 }

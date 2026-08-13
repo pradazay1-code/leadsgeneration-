@@ -16,7 +16,7 @@ import { NICHES } from "@/lib/niches";
 import { TIER_META } from "@/lib/scoring";
 import { formatDate, relativeTime, telHref } from "@/lib/format";
 import { LEAD_STATUSES, type Lead, type LeadStatus } from "@/lib/types";
-import { Button, STATUS_META, ScoreBar, TierBadge, inputClass } from "./ui";
+import { Button, STATUS_META, ScoreBar, SourceBadges, TierBadge, inputClass } from "./ui";
 
 /** Build a first-line opener from whichever gap scored highest. */
 function suggestedOpener(lead: Lead): string {
@@ -26,21 +26,31 @@ function suggestedOpener(lead: Lead): string {
 
   switch (top?.key) {
     case "no_website":
-      return `Hi — I was looking for ${niche} in ${town} and found you on Google Maps, but couldn't find a website anywhere. Are you taking on more jobs right now? I build sites and follow-up systems for ${niche} businesses and I'd put one together for you.`;
+    case "no_website_unverified":
+      return `Hi — I was looking for ${niche} in ${town} and found your listing, but couldn't find a website anywhere. Are you taking on more jobs right now? I build sites and follow-up systems for ${niche} businesses and I'd put one together for you.`;
     case "weak_website":
       return `Hi — found you while searching ${niche} in ${town}. Looks like the ${lead.websiteHost ?? "social page"} is doing all the work right now. I set up proper sites and lead follow-up for ${niche} businesses — worth a quick look?`;
     case "parasite_website":
       return `Hi — I came across your ${lead.websiteHost ?? "brokerage"} page while searching agents in ${town}. Every lead off that page belongs to the brokerage, not you. I set up independent sites and CRMs so agents own their pipeline — open to a 10-minute call?`;
+    case "not_on_review_platforms":
+      return `Hi — I was searching ${niche} in ${town} and you're not showing up on Yelp or the other places people actually look. That's leaving jobs on the table every week. I set up listings, reviews and follow-up for ${niche} businesses — want me to show you what's missing?`;
     case "reviews_0":
     case "reviews_1_3":
-      return `Hi — saw you're up and running in ${town}. You've got almost no reviews yet, which is usually the single biggest thing holding new ${niche} businesses back on Google. I run review and follow-up systems — want me to show you what it'd look like?`;
+      return `Hi — saw you're up and running in ${town}. You've got almost no reviews yet, which is usually the single biggest thing holding new ${niche} businesses back. I run review and follow-up systems — want me to show you what it'd look like?`;
     case "no_photos":
     case "no_hours":
-      return `Hi — found your listing while searching ${niche} in ${town}. Your Google profile is missing a few things that decide whether people call you or the next result. Happy to walk you through it — no charge for the audit.`;
+      return `Hi — found your listing while searching ${niche} in ${town}. Your profile is missing a few things that decide whether people call you or the next result. Happy to walk you through it — no charge for the audit.`;
     default:
       return `Hi — I was searching ${niche} in ${town} and came across your business. I help ${niche} companies get found and follow up with leads automatically. Worth a quick conversation?`;
   }
 }
+
+const SOURCE_LINK_LABELS: Partial<Record<string, string>> = {
+  yelp: "Yelp listing",
+  google_places: "Google Maps",
+  bizdata: "OpenStreetMap entry",
+  osm: "OpenStreetMap entry",
+};
 
 function CopyButton({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -217,14 +227,29 @@ export function LeadDrawer({
                 </a>
               ) : null}
 
-              {lead.mapsUrl ? (
-                <a href={lead.mapsUrl} target="_blank" rel="noopener noreferrer" className="focus-ring">
-                  <Button size="sm" variant="subtle" tabIndex={-1}>
-                    <MapPin className="size-3.5" />
-                    Maps
-                  </Button>
-                </a>
-              ) : null}
+              {(() => {
+                const seen = new Set<string>();
+                return (Object.entries(lead.sourceRefs) as Array<[string, { id: string; url: string | null }]>)
+                  .filter(([source, ref]) => {
+                    if (!ref?.url || !SOURCE_LINK_LABELS[source] || seen.has(ref.url)) return false;
+                    seen.add(ref.url);
+                    return true;
+                  })
+                  .map(([source, ref]) => (
+                    <a
+                      key={source}
+                      href={ref.url!}
+                      target="_blank"
+                      rel="noopener noreferrer nofollow"
+                      className="focus-ring"
+                    >
+                      <Button size="sm" variant="subtle" tabIndex={-1}>
+                        <MapPin className="size-3.5" />
+                        {SOURCE_LINK_LABELS[source]}
+                      </Button>
+                    </a>
+                  ));
+              })()}
 
               <a href={ownerSearch} target="_blank" rel="noopener noreferrer" className="focus-ring">
                 <Button size="sm" variant="subtle" tabIndex={-1}>
@@ -302,13 +327,21 @@ export function LeadDrawer({
             </span>
             <dl>
               <Row label="Address">{lead.address ?? "—"}</Row>
-              <Row label="Rating">
-                {lead.rating !== null
-                  ? `${lead.rating.toFixed(1)} ★ from ${lead.reviewCount} review${lead.reviewCount === 1 ? "" : "s"}`
-                  : `No rating · ${lead.reviewCount} review${lead.reviewCount === 1 ? "" : "s"}`}
+              <Row label="Seen on">
+                <SourceBadges sources={lead.sources} />
+                {lead.source === "demo" ? " (fictional sample row)" : null}
               </Row>
-              <Row label="Listing photos">{lead.photoCount}</Row>
-              <Row label="Hours listed">{lead.hasHours ? "Yes" : "No"}</Row>
+              <Row label="Reviews">
+                {lead.reviewCount === null
+                  ? "Not listed on any review platform checked"
+                  : lead.rating !== null
+                    ? `${lead.rating.toFixed(1)} ★ from ${lead.reviewCount} review${lead.reviewCount === 1 ? "" : "s"} (combined)`
+                    : `${lead.reviewCount} review${lead.reviewCount === 1 ? "" : "s"}, no rating yet`}
+              </Row>
+              <Row label="Listing photos">{lead.photoCount === null ? "Unknown" : lead.photoCount}</Row>
+              <Row label="Hours listed">
+                {lead.hasHours === null ? "Unknown" : lead.hasHours ? "Yes" : "No"}
+              </Row>
               <Row label="Categories">
                 {lead.categories.length ? lead.categories.slice(0, 6).join(", ") : "—"}
               </Row>
@@ -316,9 +349,6 @@ export function LeadDrawer({
                 {formatDate(lead.discoveredAt)} ({relativeTime(lead.discoveredAt)})
               </Row>
               <Row label="Last refreshed">{relativeTime(lead.lastSeenAt)}</Row>
-              <Row label="Source">
-                {lead.source === "demo" ? "Fictional sample row" : lead.source.replace("_", " ")}
-              </Row>
             </dl>
 
             <div className="mt-5 border-t border-line pt-4">

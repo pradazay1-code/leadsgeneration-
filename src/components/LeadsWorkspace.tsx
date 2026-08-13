@@ -14,12 +14,19 @@ import {
 import { cn } from "@/lib/cn";
 import {
   DEFAULT_FILTERS,
-  loadFilters,
-  saveFilters,
+  cacheFilters,
+  hydrateFilters,
+  loadCachedFilters,
   toQuery,
   type FilterState,
 } from "@/lib/filterState";
-import type { Lead, LeadStats, LeadStatus, ScanRunSummary } from "@/lib/types";
+import type {
+  Lead,
+  LeadStats,
+  LeadStatus,
+  ProviderStatus,
+  ScanRunSummary,
+} from "@/lib/types";
 import { FilterRail } from "./FilterRail";
 import { LeadDrawer } from "./LeadDrawer";
 import { LeadTable, SortSelect } from "./LeadTable";
@@ -37,7 +44,7 @@ interface StatsResponse {
   stats: LeadStats;
   recentScans: ScanRunSummary[];
   demoData: boolean;
-  placesConfigured: boolean;
+  providers: ProviderStatus[];
   storeKind: string;
 }
 
@@ -49,12 +56,12 @@ const PRESETS: Array<{ label: string; hint: string; patch: Partial<FilterState> 
   },
   {
     label: "No website",
-    hint: "Businesses with no site at all",
+    hint: "No website found on any source",
     patch: { hasWebsite: false, minScore: 0 },
   },
   {
     label: "Brand new",
-    hint: "Five reviews or fewer",
+    hint: "Five reviews or fewer (or not reviewed anywhere)",
     patch: { maxReviews: 5, minScore: 0 },
   },
   {
@@ -95,16 +102,40 @@ export function LeadsWorkspace() {
   const [railOpen, setRailOpen] = useState(true);
 
   const requestId = useRef(0);
+  const prefsTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guards against saving the initial default state over the server copy.
+  const userTouched = useRef(false);
 
-  // Restore the last-used filter set and rail state on first paint.
+  // Hydrate: paint instantly from the local cache, then adopt the server copy
+  // so the same saved view follows the user to any device.
   useEffect(() => {
-    setFilters(loadFilters());
+    setFilters(loadCachedFilters());
     try {
       setRailOpen(window.localStorage.getItem("leadsignal.rail") !== "closed");
     } catch {
       // Ignore storage failures.
     }
     setHydrated(true);
+
+    void (async () => {
+      try {
+        const res = await fetch("/api/prefs?keys=filters", { cache: "no-store" });
+        if (!res.ok) return;
+        const body = (await res.json()) as { prefs?: { filters?: unknown } };
+        if (body.prefs?.filters && !userTouched.current) {
+          const next = hydrateFilters(body.prefs.filters);
+          setFilters(next);
+          cacheFilters(next);
+        }
+      } catch {
+        // Server prefs are a nicety; the cached copy already painted.
+      }
+    })();
+  }, []);
+
+  const updateFilters = useCallback((next: FilterState | ((f: FilterState) => FilterState)) => {
+    userTouched.current = true;
+    setFilters(next);
   }, []);
 
   const toggleRail = useCallback(() => {
@@ -129,10 +160,21 @@ export function LeadsWorkspace() {
     }
   }, []);
 
-  // Debounced fetch whenever the filters change.
+  // Debounced fetch whenever the filters change; persist the view too.
   useEffect(() => {
     if (!hydrated) return;
-    saveFilters(filters);
+    cacheFilters(filters);
+
+    if (userTouched.current) {
+      if (prefsTimer.current) clearTimeout(prefsTimer.current);
+      prefsTimer.current = setTimeout(() => {
+        void fetch("/api/prefs", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filters }),
+        }).catch(() => {});
+      }, 900);
+    }
 
     const id = ++requestId.current;
     const timer = setTimeout(async () => {
@@ -221,12 +263,13 @@ export function LeadsWorkspace() {
 
   const rows = data?.rows ?? [];
   const facets = data?.facets ?? { states: [], cities: [] };
+  const keyedProviders = meta?.providers.filter((p) => p.needsKey && p.configured).length ?? 0;
 
   const rail = (
     <FilterRail
       filters={filters}
-      onChange={setFilters}
-      onReset={() => setFilters(DEFAULT_FILTERS)}
+      onChange={updateFilters}
+      onReset={() => updateFilters(DEFAULT_FILTERS)}
       facets={facets}
       resultCount={data?.total ?? 0}
     />
@@ -235,19 +278,24 @@ export function LeadsWorkspace() {
   return (
     <div className="space-y-5">
       {/* Environment banners */}
-      {meta && !meta.placesConfigured ? (
+      {meta?.demoData ? (
         <Banner
           tone="warn"
-          title="Running on sample data"
-          body="No Google Places API key is set, so the daily scan can't run yet. Every lead below is fictional placeholder data. Add GOOGLE_PLACES_API_KEY in Settings to start finding real businesses."
+          title="Showing fictional sample data — run your first scan"
+          body={
+            "BizData and OpenStreetMap are free and already connected, so “Scan now” works with zero setup. " +
+            (keyedProviders === 0
+              ? "Add a Yelp key in Vercel to grade business age by review count (recommended)."
+              : "Your first scan will replace these sample rows with real businesses.")
+          }
         />
       ) : null}
 
-      {meta?.placesConfigured && meta.storeKind === "memory" ? (
+      {meta && !meta.demoData && meta.storeKind === "memory" ? (
         <Banner
           tone="warn"
-          title="Leads aren't being saved"
-          body="No database is connected, so scanned leads live in memory and disappear when the server restarts. Connect a Postgres database (POSTGRES_URL) to keep your pipeline."
+          title="Leads aren't being saved permanently"
+          body="No database is connected, so scanned leads live in memory and disappear when the server restarts. Add Postgres to your Vercel project (Storage → Create Database) and set POSTGRES_URL — then your pipeline is saved server-side and identical from any device."
         />
       ) : null}
 
@@ -256,13 +304,13 @@ export function LeadsWorkspace() {
           tone={scanResult.errors.length ? "warn" : "good"}
           title={
             scanResult.demoMode
-              ? "Scan skipped"
+              ? "Scan skipped — every source is disabled"
               : `Scan finished — ${scanResult.newLeads} new, ${scanResult.updatedLeads} refreshed`
           }
           body={
             scanResult.errors.length
               ? scanResult.errors.slice(0, 3).join(" · ")
-              : `Checked ${scanResult.placesInspected} businesses across ${scanResult.territoriesScanned} territor${scanResult.territoriesScanned === 1 ? "y" : "ies"}. ${scanResult.skipped} filtered out as too established or off-niche.`
+              : `Checked ${scanResult.placesInspected} listings across ${scanResult.territoriesScanned} territor${scanResult.territoriesScanned === 1 ? "y" : "ies"} via ${scanResult.sourcesUsed.length} source${scanResult.sourcesUsed.length === 1 ? "" : "s"}. ${scanResult.skipped} filtered out as established or off-niche.`
           }
           onDismiss={() => setScanResult(null)}
         />
@@ -275,9 +323,9 @@ export function LeadsWorkspace() {
       {meta ? (
         <StatRow
           stats={meta.stats}
-          onFilterUntouched={() => setFilters((f) => ({ ...f, statuses: ["new"] }))}
-          onFilterNoWebsite={() => setFilters((f) => ({ ...f, hasWebsite: false, minScore: 0 }))}
-          onFilterThisWeek={() => setFilters((f) => ({ ...f, withinDays: 7 }))}
+          onFilterUntouched={() => updateFilters((f) => ({ ...f, statuses: ["new"] }))}
+          onFilterNoWebsite={() => updateFilters((f) => ({ ...f, hasWebsite: false, minScore: 0 }))}
+          onFilterThisWeek={() => updateFilters((f) => ({ ...f, withinDays: 7 }))}
         />
       ) : null}
 
@@ -288,7 +336,7 @@ export function LeadsWorkspace() {
             <Chip
               key={p.label}
               active={presetActive(filters, p.patch)}
-              onClick={() => setFilters((f) => ({ ...f, ...p.patch }))}
+              onClick={() => updateFilters((f) => ({ ...f, ...p.patch }))}
               title={p.hint}
             >
               {p.label}
@@ -297,7 +345,7 @@ export function LeadsWorkspace() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <SortSelect value={filters.sort} onChange={(sort) => setFilters((f) => ({ ...f, sort }))} />
+          <SortSelect value={filters.sort} onChange={(sort) => updateFilters((f) => ({ ...f, sort }))} />
           <Button
             size="sm"
             variant="ghost"
@@ -357,7 +405,7 @@ export function LeadsWorkspace() {
               title="No leads match these filters"
               description="Loosen the score threshold or clear a filter or two. If the pipeline is empty entirely, add a territory and run a scan."
               action={
-                <Button variant="subtle" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                <Button variant="subtle" onClick={() => updateFilters(DEFAULT_FILTERS)}>
                   Reset filters
                 </Button>
               }

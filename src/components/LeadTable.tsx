@@ -5,7 +5,7 @@ import { cn } from "@/lib/cn";
 import { NICHES } from "@/lib/niches";
 import { relativeTime, telHref } from "@/lib/format";
 import type { Lead, LeadSort } from "@/lib/types";
-import { ScoreBar, StatusPill, TierBadge } from "./ui";
+import { ScoreBar, SourceBadges, StatusPill, TierBadge } from "./ui";
 
 const SORT_OPTIONS: Array<{ value: LeadSort; label: string }> = [
   { value: "score_desc", label: "Best fit first" },
@@ -46,7 +46,7 @@ function WebsiteCell({ lead }: { lead: Lead }) {
     return (
       <span className="inline-flex items-center gap-1 text-[13px] font-medium text-emerald-300">
         <Globe className="size-3.5" />
-        None
+        None found
       </span>
     );
   }
@@ -66,8 +66,15 @@ function WebsiteCell({ lead }: { lead: Lead }) {
 }
 
 function ReviewsCell({ lead }: { lead: Lead }) {
+  if (lead.reviewCount === null) {
+    return (
+      <span className="text-[13px] font-medium text-emerald-300" title="Not listed on any review platform checked">
+        None
+      </span>
+    );
+  }
   if (lead.reviewCount === 0) {
-    return <span className="text-[13px] font-medium text-emerald-300">None</span>;
+    return <span className="text-[13px] font-medium text-emerald-300">0 revs</span>;
   }
   return (
     <span className="inline-flex items-center gap-1 whitespace-nowrap text-[13px] tabular-nums text-ink-2">
@@ -109,15 +116,16 @@ export function LeadTable({
     <>
       {/* Table — medium screens and up */}
       <div className="hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[820px] table-fixed border-collapse text-left">
+        <table className="w-full min-w-[860px] table-fixed border-collapse text-left">
           <thead>
             <tr className="border-b border-line text-[11px] uppercase tracking-wider text-ink-3">
               <th scope="col" className="px-4 py-2.5 font-semibold">Business</th>
-              <th scope="col" className="w-[124px] px-3 py-2.5 font-semibold">Score</th>
-              <th scope="col" className="w-[88px] px-3 py-2.5 font-semibold">Reviews</th>
-              <th scope="col" className="w-[152px] px-3 py-2.5 font-semibold">Website</th>
-              <th scope="col" className="w-[132px] px-3 py-2.5 font-semibold">Phone</th>
-              <th scope="col" className="w-[100px] px-3 py-2.5 font-semibold">Status</th>
+              <th scope="col" className="w-[106px] px-2 py-2.5 font-semibold">Score</th>
+              <th scope="col" className="w-[80px] px-2 py-2.5 font-semibold">Reviews</th>
+              <th scope="col" className="w-[128px] px-2 py-2.5 font-semibold">Website</th>
+              <th scope="col" className="w-[108px] px-2 py-2.5 font-semibold">Seen on</th>
+              <th scope="col" className="w-[122px] px-2 py-2.5 font-semibold">Phone</th>
+              <th scope="col" className="w-[92px] px-2 py-2.5 font-semibold">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -149,16 +157,19 @@ export function LeadTable({
                     {` · ${relativeTime(lead.discoveredAt)}`}
                   </div>
                 </td>
-                <td className="px-3 py-3">
+                <td className="px-2 py-3">
                   <ScoreBar score={lead.score} />
                 </td>
-                <td className="px-3 py-3">
+                <td className="px-2 py-3">
                   <ReviewsCell lead={lead} />
                 </td>
-                <td className="px-3 py-3">
+                <td className="px-2 py-3">
                   <WebsiteCell lead={lead} />
                 </td>
-                <td className="px-3 py-3">
+                <td className="px-2 py-3">
+                  <SourceBadges sources={lead.sources} />
+                </td>
+                <td className="px-2 py-3">
                   {lead.phone ? (
                     <a
                       href={telHref(lead.phone)}
@@ -172,7 +183,7 @@ export function LeadTable({
                     <span className="text-[13px] text-ink-3">—</span>
                   )}
                 </td>
-                <td className="px-3 py-3">
+                <td className="px-2 py-3">
                   <StatusPill status={lead.status} />
                 </td>
               </tr>
@@ -214,6 +225,9 @@ export function LeadTable({
                 <ReviewsCell lead={lead} />
                 <WebsiteCell lead={lead} />
                 {lead.phone ? <span>{lead.phone}</span> : null}
+              </div>
+              <div className="mt-2">
+                <SourceBadges sources={lead.sources} />
               </div>
             </button>
           </li>

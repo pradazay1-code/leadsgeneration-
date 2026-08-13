@@ -1,13 +1,14 @@
 import { scoreBusiness, normaliseHost } from "../scoring";
-import type { Lead, LeadStatus, NicheId, Territory } from "../types";
+import type { Lead, LeadStatus, NicheId, SourceId, SourceRefs, Territory } from "../types";
 
 /**
- * Sample data so the app is explorable before a Places API key is attached.
+ * Sample data so the app is explorable before the first real scan.
  *
  * Every record here is FICTIONAL. Names are invented and all phone numbers use
  * the 555-01xx range reserved for fiction, so nothing in this file can be
  * mistaken for — or accidentally dial — a real business. Demo rows are tagged
- * `source: "demo"` and the UI badges them as sample data.
+ * `source: "demo"` and the UI badges them as sample data; the first real scan
+ * deletes them.
  */
 interface DemoSeed {
   name: string;
@@ -16,14 +17,19 @@ interface DemoSeed {
   phone: string | null;
   website: string | null;
   rating: number | null;
-  reviewCount: number;
-  photoCount: number;
-  hasHours: boolean;
+  reviewCount: number | null;
+  photoCount: number | null;
+  hasHours: boolean | null;
   categories: string[];
+  /** Which platforms "saw" this fictional business. */
+  seenOn: SourceId[];
   status?: LeadStatus;
   daysAgo: number;
   notes?: string;
 }
+
+/** Demo rows pretend Yelp + the free OSM pair were checked (no Google key). */
+const DEMO_CHECKED: SourceId[] = ["yelp", "bizdata", "osm"];
 
 const SEEDS: DemoSeed[] = [
   // ---- Junk removal -------------------------------------------------------
@@ -34,10 +40,11 @@ const SEEDS: DemoSeed[] = [
     phone: "(555) 0142",
     website: null,
     rating: null,
-    reviewCount: 0,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["moving_company", "point_of_interest"],
+    reviewCount: null,
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["osm"],
     daysAgo: 0,
   },
   {
@@ -48,9 +55,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 5,
     reviewCount: 3,
-    photoCount: 1,
-    hasHours: false,
-    categories: ["moving_company", "establishment"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp", "osm"],
     daysAgo: 0,
   },
   {
@@ -61,9 +69,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://facebook.com/ledgewooddebris",
     rating: 4.9,
     reviewCount: 7,
-    photoCount: 2,
-    hasHours: false,
-    categories: ["moving_company"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp"],
     daysAgo: 1,
   },
   {
@@ -74,9 +83,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.7,
     reviewCount: 11,
-    photoCount: 0,
+    photoCount: null,
     hasHours: true,
-    categories: ["moving_company", "general_contractor"],
+    categories: ["junk_removal"],
+    seenOn: ["yelp", "bizdata"],
     status: "contacted",
     daysAgo: 3,
     notes: "Left a voicemail Tue. Owner does estate cleanouts, no booking form anywhere.",
@@ -89,9 +99,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://neponsetcarting.wixsite.com/hauling",
     rating: 4.4,
     reviewCount: 16,
-    photoCount: 3,
+    photoCount: null,
     hasHours: true,
-    categories: ["moving_company"],
+    categories: ["junk_removal"],
+    seenOn: ["yelp", "osm"],
     daysAgo: 4,
   },
   {
@@ -102,9 +113,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.8,
     reviewCount: 5,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["moving_company", "establishment"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp"],
     status: "responded",
     daysAgo: 6,
     notes: "Texted back — wants to see pricing for a site + missed-call text-back.",
@@ -117,9 +129,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.6,
     reviewCount: 22,
-    photoCount: 4,
+    photoCount: null,
     hasHours: true,
-    categories: ["moving_company"],
+    categories: ["junk_removal"],
+    seenOn: ["yelp", "bizdata", "osm"],
     daysAgo: 9,
   },
   {
@@ -130,9 +143,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://granitecitydumpster.com",
     rating: 4.9,
     reviewCount: 84,
-    photoCount: 12,
+    photoCount: null,
     hasHours: true,
-    categories: ["moving_company", "storage"],
+    categories: ["dumpster_rental"],
+    seenOn: ["yelp", "bizdata", "osm"],
     daysAgo: 11,
   },
   {
@@ -143,9 +157,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: null,
     reviewCount: 1,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["moving_company"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp"],
     status: "qualified",
     daysAgo: 13,
     notes: "Booked a call for Thursday. Two trucks, all word of mouth right now.",
@@ -158,9 +173,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://linktr.ee/bluehillsjunk",
     rating: 4.3,
     reviewCount: 9,
-    photoCount: 1,
-    hasHours: false,
-    categories: ["general_contractor", "moving_company"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp"],
     daysAgo: 16,
   },
   {
@@ -170,10 +186,11 @@ const SEEDS: DemoSeed[] = [
     phone: null,
     website: null,
     rating: null,
-    reviewCount: 2,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["moving_company"],
+    reviewCount: null,
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["osm"],
     daysAgo: 19,
   },
   {
@@ -184,9 +201,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 5,
     reviewCount: 4,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["moving_company"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["junk_removal"],
+    seenOn: ["yelp", "osm"],
     status: "won",
     daysAgo: 24,
     notes: "Closed — site + CRM onboarding starts next week.",
@@ -201,9 +219,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 5,
     reviewCount: 2,
-    photoCount: 0,
-    hasHours: false,
-    categories: ["real_estate_agency", "point_of_interest"],
+    photoCount: null,
+    hasHours: null,
+    categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata"],
     daysAgo: 0,
   },
   {
@@ -214,9 +233,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://agents.kw.com/northfield-home-partners",
     rating: 4.9,
     reviewCount: 6,
-    photoCount: 1,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata"],
     daysAgo: 1,
   },
   {
@@ -226,10 +246,11 @@ const SEEDS: DemoSeed[] = [
     phone: "(555) 0139",
     website: null,
     rating: null,
-    reviewCount: 0,
-    photoCount: 0,
-    hasHours: false,
+    reviewCount: null,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["bizdata"],
     daysAgo: 2,
   },
   {
@@ -240,9 +261,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://facebook.com/okonkworealestate",
     rating: 4.8,
     reviewCount: 8,
-    photoCount: 2,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata"],
     status: "contacted",
     daysAgo: 4,
     notes: "DM'd on FB. Solo agent, 11 listings last year, zero lead capture.",
@@ -255,9 +277,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.5,
     reviewCount: 13,
-    photoCount: 3,
+    photoCount: null,
     hasHours: true,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata", "osm"],
     daysAgo: 5,
   },
   {
@@ -268,9 +291,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://anchorandoak.godaddysites.com",
     rating: null,
     reviewCount: 1,
-    photoCount: 0,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp"],
     daysAgo: 7,
   },
   {
@@ -281,9 +305,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.1,
     reviewCount: 19,
-    photoCount: 2,
+    photoCount: null,
     hasHours: true,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata"],
     daysAgo: 10,
   },
   {
@@ -294,9 +319,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://dwhitaker.realtor.com/profile",
     rating: 5,
     reviewCount: 4,
-    photoCount: 1,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp"],
     daysAgo: 12,
   },
   {
@@ -307,9 +333,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: null,
     reviewCount: 3,
-    photoCount: 0,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "osm"],
     status: "qualified",
     daysAgo: 15,
     notes: "Two-agent shop. Wants IDX + follow-up automation. Proposal sent.",
@@ -322,9 +349,10 @@ const SEEDS: DemoSeed[] = [
     website: "https://summitlinebrokerage.com",
     rating: 4.9,
     reviewCount: 132,
-    photoCount: 18,
+    photoCount: null,
     hasHours: true,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata", "osm"],
     daysAgo: 18,
   },
   {
@@ -335,9 +363,10 @@ const SEEDS: DemoSeed[] = [
     website: null,
     rating: 4.6,
     reviewCount: 6,
-    photoCount: 0,
-    hasHours: false,
+    photoCount: null,
+    hasHours: null,
     categories: ["real_estate_agency"],
+    seenOn: ["yelp", "bizdata"],
     status: "lost",
     daysAgo: 27,
     notes: "Signed with a cousin who 'does websites'. Re-touch in Q3.",
@@ -364,16 +393,23 @@ export function buildDemoLeads(): Lead[] {
       reviewCount: seed.reviewCount,
       photoCount: seed.photoCount,
       hasHours: seed.hasHours,
-      businessStatus: "OPERATIONAL",
+      businessStatus: null,
       categories: seed.categories,
+      sources: seed.seenOn,
+      checkedSources: DEMO_CHECKED,
     });
     if (result.disqualified) return;
+
+    const sourceRefs: SourceRefs = {};
+    for (const s of seed.seenOn) sourceRefs[s] = { id: `demo-${s}-${i + 1}`, url: null };
 
     const discoveredAt = isoDaysAgo(seed.daysAgo);
     leads.push({
       id: `demo-${i + 1}`,
       sourceId: `demo-${i + 1}`,
       source: "demo",
+      sources: seed.seenOn,
+      sourceRefs,
       name: seed.name,
       niche: seed.niche,
       phone: seed.phone,
@@ -390,7 +426,7 @@ export function buildDemoLeads(): Lead[] {
       reviewCount: seed.reviewCount,
       photoCount: seed.photoCount,
       hasHours: seed.hasHours,
-      businessStatus: "OPERATIONAL",
+      businessStatus: null,
       categories: seed.categories,
       score: result.score,
       tier: result.tier,
@@ -420,6 +456,9 @@ export function buildDemoTerritories(): Territory[] {
     area: t.area,
     state: "MA",
     niches: t.niches,
+    radiusKm: 15,
+    lat: null,
+    lng: null,
     enabled: true,
     createdAt: isoDaysAgo(30),
     lastScannedAt: null,

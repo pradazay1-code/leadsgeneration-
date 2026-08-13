@@ -13,10 +13,18 @@ export function matchesFilters(lead: Lead, f: LeadFilters): boolean {
   if (f.statuses?.length && !f.statuses.includes(lead.status)) return false;
   if (f.states?.length && !(lead.state && f.states.includes(lead.state))) return false;
   if (f.cities?.length && !(lead.city && f.cities.includes(lead.city))) return false;
+  if (f.sources?.length && !lead.sources.some((s) => f.sources!.includes(s))) return false;
 
   if (typeof f.minScore === "number" && lead.score < f.minScore) return false;
   if (typeof f.maxScore === "number" && lead.score > f.maxScore) return false;
-  if (typeof f.maxReviews === "number" && lead.reviewCount > f.maxReviews) return false;
+  // Unknown review counts pass — those are the most under-the-radar leads.
+  if (
+    typeof f.maxReviews === "number" &&
+    lead.reviewCount !== null &&
+    lead.reviewCount > f.maxReviews
+  ) {
+    return false;
+  }
 
   if (typeof f.hasWebsite === "boolean" && Boolean(lead.website) !== f.hasWebsite) return false;
   if (typeof f.hasPhone === "boolean" && Boolean(lead.phone) !== f.hasPhone) return false;
@@ -37,13 +45,20 @@ export function matchesFilters(lead: Lead, f: LeadFilters): boolean {
   return true;
 }
 
+/** Nulls sort as "fewest" — an unknown review count is the strongest newness hint. */
+function reviewsAsc(a: Lead, b: Lead): number {
+  const av = a.reviewCount ?? -1;
+  const bv = b.reviewCount ?? -1;
+  return av - bv || b.score - a.score;
+}
+
 const SORTERS: Record<LeadSort, (a: Lead, b: Lead) => number> = {
-  score_desc: (a, b) => b.score - a.score || a.reviewCount - b.reviewCount,
+  score_desc: (a, b) => b.score - a.score || (a.reviewCount ?? -1) - (b.reviewCount ?? -1),
   score_asc: (a, b) => a.score - b.score,
   newest: (a, b) => Date.parse(b.discoveredAt) - Date.parse(a.discoveredAt),
   oldest: (a, b) => Date.parse(a.discoveredAt) - Date.parse(b.discoveredAt),
-  reviews_asc: (a, b) => a.reviewCount - b.reviewCount || b.score - a.score,
-  reviews_desc: (a, b) => b.reviewCount - a.reviewCount,
+  reviews_asc: reviewsAsc,
+  reviews_desc: (a, b) => (b.reviewCount ?? -1) - (a.reviewCount ?? -1),
   name_asc: (a, b) => a.name.localeCompare(b.name),
 };
 

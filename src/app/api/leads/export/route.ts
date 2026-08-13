@@ -6,6 +6,15 @@ import type { Lead } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+const SOURCE_NAMES: Record<string, string> = {
+  bizdata: "BizData",
+  osm: "OpenStreetMap",
+  yelp: "Yelp",
+  google_places: "Google",
+  manual: "Manual",
+  demo: "Sample",
+};
+
 const COLUMNS: Array<{ header: string; value: (l: Lead) => string }> = [
   { header: "Business", value: (l) => l.name },
   { header: "Niche", value: (l) => NICHES[l.niche].shortLabel },
@@ -17,7 +26,9 @@ const COLUMNS: Array<{ header: string; value: (l: Lead) => string }> = [
   { header: "State", value: (l) => l.state ?? "" },
   { header: "Address", value: (l) => l.address ?? "" },
   { header: "Rating", value: (l) => (l.rating === null ? "" : l.rating.toFixed(1)) },
-  { header: "Reviews", value: (l) => String(l.reviewCount) },
+  { header: "Reviews", value: (l) => (l.reviewCount === null ? "none found" : String(l.reviewCount)) },
+  { header: "Seen on", value: (l) => l.sources.map((s) => SOURCE_NAMES[s] ?? s).join(" + ") },
+  { header: "Yelp page", value: (l) => l.sourceRefs.yelp?.url ?? "" },
   { header: "Status", value: (l) => l.status },
   { header: "Notes", value: (l) => l.notes },
   { header: "Why it scored", value: (l) => l.signals.map((s) => s.label).join(" | ") },

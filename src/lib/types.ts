@@ -1,5 +1,18 @@
 export type NicheId = "junk_removal" | "real_estate";
 
+/** Where a lead's data can come from. */
+export type SourceId = "bizdata" | "osm" | "yelp" | "google_places" | "manual" | "demo";
+
+/** Per-source reference back to the original listing. */
+export interface SourceRef {
+  /** Provider-native id (OSM element id, Yelp business id, Place id…). */
+  id: string;
+  /** Public listing URL on that platform, when one exists. */
+  url: string | null;
+}
+
+export type SourceRefs = Partial<Record<SourceId, SourceRef>>;
+
 /**
  * How much of a digital footprint a business has already built.
  * Ordered weakest -> strongest. `established` leads are the ones we do NOT want:
@@ -48,9 +61,14 @@ export interface ScoreResult {
 
 export interface Lead {
   id: string;
-  /** Google Places resource id, or a synthetic id for demo/manual rows. Dedupe key. */
+  /** Canonical dedupe key (merged identity), unique per business. */
   sourceId: string;
-  source: "google_places" | "manual" | "demo";
+  /** Primary source — the richest platform this lead was seen on. */
+  source: SourceId;
+  /** Every platform this lead was seen on. */
+  sources: SourceId[];
+  /** Links back to each platform's listing. */
+  sourceRefs: SourceRefs;
 
   name: string;
   niche: NicheId;
@@ -68,11 +86,17 @@ export interface Lead {
   mapsUrl: string | null;
 
   rating: number | null;
-  reviewCount: number;
-  photoCount: number;
-  hasHours: boolean;
+  /**
+   * Combined review count across platforms that publish reviews.
+   * `null` = no review platform has this business (or none was checked).
+   */
+  reviewCount: number | null;
+  /** `null` = no source that counts photos saw this business. */
+  photoCount: number | null;
+  /** `null` = unknown (the sources that saw it don't reliably publish hours). */
+  hasHours: boolean | null;
   businessStatus: string | null;
-  /** Google's own category strings, e.g. ["moving_company", "point_of_interest"]. */
+  /** Normalised category strings from every source. */
   categories: string[];
 
   score: number;
@@ -96,10 +120,15 @@ export interface Lead {
 export interface Territory {
   id: string;
   label: string;
-  /** Free-text locality used to build the Places query, e.g. "Norwood, MA". */
+  /** Free-text locality used to build source queries, e.g. "Norwood, MA". */
   area: string;
   state: string;
   niches: NicheId[];
+  /** Search radius around the geocoded centre, km. */
+  radiusKm: number;
+  /** Geocoded centre (cached from Nominatim; null until first geocode). */
+  lat: number | null;
+  lng: number | null;
   enabled: boolean;
   createdAt: string;
   lastScannedAt: string | null;
@@ -115,8 +144,10 @@ export interface ScanRunSummary {
   newLeads: number;
   updatedLeads: number;
   skipped: number;
+  /** Which providers actually ran. */
+  sourcesUsed: SourceId[];
   errors: string[];
-  /** True when no Places key was configured and the run was a no-op. */
+  /** True when no source was able to run and the scan was a no-op. */
   demoMode: boolean;
 }
 
@@ -127,8 +158,11 @@ export interface LeadFilters {
   statuses?: LeadStatus[];
   states?: string[];
   cities?: string[];
+  /** Match leads seen on ANY of these sources. */
+  sources?: SourceId[];
   minScore?: number;
   maxScore?: number;
+  /** Unknown review counts (null) always pass — they're the most under-the-radar. */
   maxReviews?: number;
   hasWebsite?: boolean;
   hasPhone?: boolean;
@@ -158,4 +192,15 @@ export interface LeadStats {
   byStatus: Record<LeadStatus, number>;
   byNiche: Record<NicheId, number>;
   avgScore: number;
+}
+
+/** Provider status line for the Settings page. */
+export interface ProviderStatus {
+  id: SourceId;
+  label: string;
+  /** Ready to run (has key if it needs one, not disabled). */
+  configured: boolean;
+  /** Whether this provider needs an API key at all. */
+  needsKey: boolean;
+  detail: string;
 }

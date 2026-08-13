@@ -1,10 +1,11 @@
 import "server-only";
 import { getStore } from "./db";
 import type { LeadUpsert } from "./db/store";
-import { getNiche } from "./niches";
-import { isPlacesConfigured, PlacesError, textSearch, type PlaceRecord } from "./places";
+import { mergeRecords, type MergedBusiness } from "./merge";
+import { geocodeArea } from "./sources/geocode";
+import { SourceError, configuredProviders, type SourceRecord } from "./sources";
 import { normaliseHost, scoreBusiness } from "./scoring";
-import type { NicheId, ScanRunSummary, Territory } from "./types";
+import type { NicheId, ScanRunSummary, SourceId, Territory } from "./types";
 
 /**
  * Leads below this score are noise — established operators who already have
@@ -18,54 +19,57 @@ export interface ScanOptions {
   /** Restrict to specific niches. Defaults to each territory's own niches. */
   niches?: NicheId[];
   minScore?: number;
-  /** Results pulled per individual Places query. */
-  perQueryLimit?: number;
-  /** Cap on queries per run, protecting the Places bill on large territory lists. */
-  maxQueries?: number;
+  /** Results pulled per provider per territory×niche. */
+  perSourceLimit?: number;
 }
 
-function placeToUpsert(
-  place: PlaceRecord,
+function toUpsert(
+  biz: MergedBusiness,
   niche: NicheId,
+  checkedSources: SourceId[],
   territoryId: string | null,
   now: string,
 ): LeadUpsert | null {
   const result = scoreBusiness({
-    name: place.name,
+    name: biz.name,
     niche,
-    website: place.website,
-    phone: place.phone,
-    rating: place.rating,
-    reviewCount: place.reviewCount,
-    photoCount: place.photoCount,
-    hasHours: place.hasHours,
-    businessStatus: place.businessStatus,
-    categories: place.categories,
+    website: biz.website,
+    phone: biz.phone,
+    rating: biz.rating,
+    reviewCount: biz.reviewCount,
+    photoCount: biz.photoCount,
+    hasHours: biz.hasHours,
+    businessStatus: biz.businessStatus,
+    categories: biz.categories,
+    sources: biz.sources,
+    checkedSources,
   });
 
   if (result.disqualified) return null;
 
   return {
-    sourceId: place.sourceId,
-    source: "google_places",
-    name: place.name,
+    sourceId: `m:${niche}:${biz.identityKey}`,
+    source: biz.primarySource,
+    sources: biz.sources,
+    sourceRefs: biz.sourceRefs,
+    name: biz.name,
     niche,
-    phone: place.phone,
-    website: place.website,
-    websiteHost: normaliseHost(place.website),
-    address: place.address,
-    city: place.city,
-    state: place.state,
-    postalCode: place.postalCode,
-    lat: place.lat,
-    lng: place.lng,
-    mapsUrl: place.mapsUrl,
-    rating: place.rating,
-    reviewCount: place.reviewCount,
-    photoCount: place.photoCount,
-    hasHours: place.hasHours,
-    businessStatus: place.businessStatus,
-    categories: place.categories,
+    phone: biz.phone,
+    website: biz.website,
+    websiteHost: normaliseHost(biz.website),
+    address: biz.address,
+    city: biz.city,
+    state: biz.state,
+    postalCode: biz.postalCode,
+    lat: biz.lat,
+    lng: biz.lng,
+    mapsUrl: biz.mapsUrl,
+    rating: biz.rating,
+    reviewCount: biz.reviewCount,
+    photoCount: biz.photoCount,
+    hasHours: biz.hasHours,
+    businessStatus: biz.businessStatus,
+    categories: biz.categories,
     score: result.score,
     tier: result.tier,
     signals: result.signals,
@@ -75,17 +79,20 @@ function placeToUpsert(
 }
 
 /**
- * Sweep every enabled territory, score what comes back, and persist anything
- * that clears the bar. Safe to call repeatedly — leads dedupe on their Places
- * id, and a re-scan refreshes the public data while preserving the status and
- * notes the user has set.
+ * Sweep every enabled territory across every configured source, merge what
+ * comes back per business, score it, and persist anything that clears the bar.
+ *
+ * Safe to call repeatedly — leads dedupe on their merged identity, and a
+ * re-scan refreshes public data while preserving the status, notes, and
+ * discovery date the user owns.
  */
 export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary> {
   const startedAt = new Date().toISOString();
   const store = await getStore();
   const errors: string[] = [];
 
-  if (!isPlacesConfigured()) {
+  const providers = configuredProviders();
+  if (!providers.length) {
     const summary: ScanRunSummary = {
       startedAt,
       finishedAt: new Date().toISOString(),
@@ -94,7 +101,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       newLeads: 0,
       updatedLeads: 0,
       skipped: 0,
-      errors: ["GOOGLE_PLACES_API_KEY is not set — running in demo mode, no live scan performed."],
+      sourcesUsed: [],
+      errors: ["Every data source is disabled — nothing to scan with."],
       demoMode: true,
     };
     await store.recordScan(summary);
@@ -102,8 +110,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   }
 
   const minScore = options.minScore ?? DEFAULT_MIN_SCORE;
-  const perQueryLimit = options.perQueryLimit ?? 20;
-  const maxQueries = options.maxQueries ?? 60;
+  const perSourceLimit = options.perSourceLimit ?? 120;
 
   const all = await store.listTerritories();
   const targets: Territory[] = all.filter((t) => {
@@ -111,54 +118,70 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     return t.enabled;
   });
 
+  // Providers that hit an auth/quota wall get benched for the rest of the run.
+  const benched = new Set<SourceId>();
+  const sourcesUsed = new Set<SourceId>();
   let placesInspected = 0;
   let skipped = 0;
-  let queriesRun = 0;
   const batch = new Map<string, LeadUpsert>();
   const perTerritoryCount = new Map<string, number>();
   const now = new Date().toISOString();
 
-  outer: for (const territory of targets) {
+  for (const territory of targets) {
+    // The Overpass provider needs coordinates; geocode once and cache.
+    let terr = territory;
+    if (terr.lat === null || terr.lng === null) {
+      const point = await geocodeArea(terr.area);
+      if (point) {
+        terr = { ...terr, lat: point.lat, lng: point.lng };
+        await store.updateTerritory(terr.id, { lat: point.lat, lng: point.lng });
+      } else {
+        errors.push(`Couldn't geocode "${terr.area}" — OpenStreetMap radius search skipped for it.`);
+      }
+    }
+
     const niches = options.niches?.length
-      ? territory.niches.filter((n) => options.niches!.includes(n))
-      : territory.niches;
+      ? terr.niches.filter((n) => options.niches!.includes(n))
+      : terr.niches;
 
     for (const niche of niches) {
-      for (const template of getNiche(niche).queries) {
-        if (queriesRun >= maxQueries) {
-          errors.push(`Query cap of ${maxQueries} reached — remaining territories deferred.`);
-          break outer;
-        }
-        queriesRun += 1;
+      const records: SourceRecord[] = [];
+      const checkedSources: SourceId[] = [];
 
-        const query = template.replace("{area}", territory.area);
+      for (const provider of providers) {
+        if (benched.has(provider.id) || !provider.supportsNiche(niche)) continue;
+
         try {
-          const places = await textSearch(query, { limit: perQueryLimit });
-          placesInspected += places.length;
-
-          for (const place of places) {
-            const upsert = placeToUpsert(place, niche, territory.id, now);
-            if (!upsert || upsert.score < minScore) {
-              skipped += 1;
-              continue;
-            }
-            // Keep the highest-scoring interpretation when the same business
-            // is returned by several queries.
-            const prev = batch.get(upsert.sourceId);
-            if (!prev || upsert.score > prev.score) batch.set(upsert.sourceId, upsert);
-            perTerritoryCount.set(territory.id, (perTerritoryCount.get(territory.id) ?? 0) + 1);
-          }
+          const found = await provider.search({
+            niche,
+            territory: terr,
+            limit: perSourceLimit,
+          });
+          checkedSources.push(provider.id);
+          sourcesUsed.add(provider.id);
+          records.push(...found);
+          placesInspected += found.length;
         } catch (err) {
           const message =
-            err instanceof PlacesError
-              ? `${query}: ${err.message}`
-              : `${query}: ${err instanceof Error ? err.message : String(err)}`;
-          errors.push(message);
-          // An auth/quota failure will hit every subsequent query too — stop early.
-          if (err instanceof PlacesError && (err.status === 401 || err.status === 403 || err.status === 429)) {
-            break outer;
+            err instanceof Error ? err.message : `${provider.label}: ${String(err)}`;
+          errors.push(`${terr.label} / ${niche}: ${message}`);
+          if (err instanceof SourceError && err.fatal) {
+            benched.add(provider.id);
+            errors.push(`${provider.label} benched for the rest of this run (auth/quota).`);
           }
         }
+      }
+
+      for (const merged of mergeRecords(records)) {
+        const upsert = toUpsert(merged, niche, checkedSources, terr.id, now);
+        if (!upsert || upsert.score < minScore) {
+          skipped += 1;
+          continue;
+        }
+        // Keep the highest-scoring interpretation if two territories overlap.
+        const prev = batch.get(upsert.sourceId);
+        if (!prev || upsert.score > prev.score) batch.set(upsert.sourceId, upsert);
+        perTerritoryCount.set(terr.id, (perTerritoryCount.get(terr.id) ?? 0) + 1);
       }
     }
   }
@@ -182,6 +205,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     newLeads: inserted,
     updatedLeads: updated,
     skipped,
+    sourcesUsed: [...sourcesUsed],
     errors,
     demoMode: false,
   };

@@ -20,6 +20,7 @@ export function TerritoryManager() {
   const [area, setArea] = useState("");
   const [label, setLabel] = useState("");
   const [niches, setNiches] = useState<NicheId[]>(["junk_removal", "real_estate"]);
+  const [radiusKm, setRadiusKm] = useState(15);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -48,7 +49,7 @@ export function TerritoryManager() {
       const res = await fetch("/api/territories", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ area: area.trim(), label: label.trim() || area.trim(), niches }),
+        body: JSON.stringify({ area: area.trim(), label: label.trim() || area.trim(), niches, radiusKm }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Could not add that territory");
@@ -160,7 +161,7 @@ export function TerritoryManager() {
                       ))}
                     </div>
                     <p className="mt-1 text-[13px] text-ink-3">
-                      Searching “{t.area}” ·{" "}
+                      Searching “{t.area}” within {t.radiusKm} km ·{" "}
                       {t.lastScannedAt ? `last swept ${relativeTime(t.lastScannedAt)}` : "never swept"}
                       {t.leadsFound > 0 ? ` · ${t.leadsFound} hits so far` : ""}
                     </p>
@@ -225,7 +226,7 @@ export function TerritoryManager() {
             />
           </div>
 
-          <div className="mb-5">
+          <div className="mb-4">
             <Label>Industries to sweep</Label>
             <div className="flex flex-wrap gap-1.5">
               {NICHE_LIST.map((n) => (
@@ -242,6 +243,24 @@ export function TerritoryManager() {
                 </Chip>
               ))}
             </div>
+          </div>
+
+          <div className="mb-5">
+            <Label htmlFor="radius">Search radius — {radiusKm} km (~{Math.round(radiusKm * 0.62)} mi)</Label>
+            <input
+              id="radius"
+              type="range"
+              min={2}
+              max={50}
+              step={1}
+              value={radiusKm}
+              onChange={(e) => setRadiusKm(Number(e.target.value))}
+              className="w-full accent-[#34d399] focus-ring"
+            />
+            <p className="mt-1.5 text-[11px] leading-relaxed text-ink-3">
+              How far around the town centre the free map sources sweep. 15 km suits a town;
+              go wider for rural areas.
+            </p>
           </div>
 
           <Button

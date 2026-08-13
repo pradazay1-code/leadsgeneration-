@@ -10,6 +10,8 @@ import type {
   PresenceTier,
   ScanRunSummary,
   ScoreSignal,
+  SourceId,
+  SourceRefs,
   Territory,
 } from "../types";
 import { LEAD_STATUSES } from "../types";
@@ -56,11 +58,19 @@ function jsonb(value: unknown) {
   return client().json(value as never);
 }
 
+function numOrNull(v: unknown): number | null {
+  return v === null || v === undefined ? null : Number(v);
+}
+
 function toLead(r: Row): Lead {
   return {
     id: String(r.id),
     sourceId: r.source_id,
-    source: r.source,
+    source: r.source as SourceId,
+    sources: ((r.sources ?? []) as SourceId[]).length
+      ? (r.sources as SourceId[])
+      : [r.source as SourceId],
+    sourceRefs: (r.source_refs ?? {}) as SourceRefs,
     name: r.name,
     niche: r.niche as NicheId,
     phone: r.phone,
@@ -70,13 +80,13 @@ function toLead(r: Row): Lead {
     city: r.city,
     state: r.state,
     postalCode: r.postal_code,
-    lat: r.lat === null ? null : Number(r.lat),
-    lng: r.lng === null ? null : Number(r.lng),
+    lat: numOrNull(r.lat),
+    lng: numOrNull(r.lng),
     mapsUrl: r.maps_url,
-    rating: r.rating === null ? null : Number(r.rating),
-    reviewCount: Number(r.review_count ?? 0),
-    photoCount: Number(r.photo_count ?? 0),
-    hasHours: Boolean(r.has_hours),
+    rating: numOrNull(r.rating),
+    reviewCount: numOrNull(r.review_count),
+    photoCount: numOrNull(r.photo_count),
+    hasHours: r.has_hours === null || r.has_hours === undefined ? null : Boolean(r.has_hours),
     businessStatus: r.business_status,
     categories: (r.categories ?? []) as string[],
     score: Number(r.score ?? 0),
@@ -97,6 +107,9 @@ function toTerritory(r: Row): Territory {
     area: r.area,
     state: r.state,
     niches: (r.niches ?? []) as NicheId[],
+    radiusKm: Number(r.radius_km ?? 15),
+    lat: numOrNull(r.lat),
+    lng: numOrNull(r.lng),
     enabled: Boolean(r.enabled),
     createdAt: new Date(r.created_at).toISOString(),
     lastScannedAt: r.last_scanned_at ? new Date(r.last_scanned_at).toISOString() : null,
@@ -122,6 +135,9 @@ export class PostgresStore implements Store {
         area            text        NOT NULL,
         state           text        NOT NULL DEFAULT '',
         niches          jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        radius_km       integer     NOT NULL DEFAULT 15,
+        lat             double precision,
+        lng             double precision,
         enabled         boolean     NOT NULL DEFAULT true,
         created_at      timestamptz NOT NULL DEFAULT now(),
         last_scanned_at timestamptz,
@@ -132,7 +148,9 @@ export class PostgresStore implements Store {
       CREATE TABLE IF NOT EXISTS leads (
         id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         source_id       text        NOT NULL UNIQUE,
-        source          text        NOT NULL DEFAULT 'google_places',
+        source          text        NOT NULL DEFAULT 'manual',
+        sources         jsonb       NOT NULL DEFAULT '[]'::jsonb,
+        source_refs     jsonb       NOT NULL DEFAULT '{}'::jsonb,
         name            text        NOT NULL,
         niche           text        NOT NULL,
         phone           text,
@@ -146,9 +164,9 @@ export class PostgresStore implements Store {
         lng             double precision,
         maps_url        text,
         rating          double precision,
-        review_count    integer     NOT NULL DEFAULT 0,
-        photo_count     integer     NOT NULL DEFAULT 0,
-        has_hours       boolean     NOT NULL DEFAULT false,
+        review_count    integer,
+        photo_count     integer,
+        has_hours       boolean,
         business_status text,
         categories      jsonb       NOT NULL DEFAULT '[]'::jsonb,
         score           integer     NOT NULL DEFAULT 0,
@@ -171,15 +189,35 @@ export class PostgresStore implements Store {
         new_leads            integer NOT NULL DEFAULT 0,
         updated_leads        integer NOT NULL DEFAULT 0,
         skipped              integer NOT NULL DEFAULT 0,
+        sources_used         jsonb   NOT NULL DEFAULT '[]'::jsonb,
         errors               jsonb   NOT NULL DEFAULT '[]'::jsonb,
         demo_mode            boolean NOT NULL DEFAULT false
       )`;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS app_prefs (
+        key        text PRIMARY KEY,
+        value      jsonb NOT NULL,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`;
+
+    // Idempotent upgrades for databases created by earlier versions.
+    await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_refs jsonb NOT NULL DEFAULT '{}'::jsonb`;
+    await sql`ALTER TABLE leads ALTER COLUMN review_count DROP NOT NULL`;
+    await sql`ALTER TABLE leads ALTER COLUMN photo_count DROP NOT NULL`;
+    await sql`ALTER TABLE leads ALTER COLUMN has_hours DROP NOT NULL`;
+    await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS radius_km integer NOT NULL DEFAULT 15`;
+    await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS lat double precision`;
+    await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS lng double precision`;
+    await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS sources_used jsonb NOT NULL DEFAULT '[]'::jsonb`;
 
     await sql`CREATE INDEX IF NOT EXISTS leads_score_idx ON leads (score DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_discovered_idx ON leads (discovered_at DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_niche_idx ON leads (niche)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_status_idx ON leads (status)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_tier_idx ON leads (tier)`;
+    await sql`CREATE INDEX IF NOT EXISTS leads_sources_idx ON leads USING gin (sources)`;
   }
 
   async isDemo(): Promise<boolean> {
@@ -195,9 +233,15 @@ export class PostgresStore implements Store {
     if (f.statuses?.length) conds.push(sql`status = ANY(${f.statuses})`);
     if (f.states?.length) conds.push(sql`state = ANY(${f.states})`);
     if (f.cities?.length) conds.push(sql`city = ANY(${f.cities})`);
+    if (f.sources?.length) {
+      // jsonb "contains any of these keys" — sources is a JSON array of strings.
+      conds.push(sql`sources ?| ${sql.array(f.sources)}`);
+    }
     if (typeof f.minScore === "number") conds.push(sql`score >= ${f.minScore}`);
     if (typeof f.maxScore === "number") conds.push(sql`score <= ${f.maxScore}`);
-    if (typeof f.maxReviews === "number") conds.push(sql`review_count <= ${f.maxReviews}`);
+    if (typeof f.maxReviews === "number") {
+      conds.push(sql`(review_count IS NULL OR review_count <= ${f.maxReviews})`);
+    }
     if (f.hasWebsite === true) conds.push(sql`website IS NOT NULL AND website <> ''`);
     if (f.hasWebsite === false) conds.push(sql`(website IS NULL OR website = '')`);
     if (f.hasPhone === true) conds.push(sql`phone IS NOT NULL AND phone <> ''`);
@@ -222,19 +266,19 @@ export class PostgresStore implements Store {
     const sql = client();
     switch (sort) {
       case "score_asc":
-        return sql`score ASC, review_count DESC`;
+        return sql`score ASC, review_count DESC NULLS LAST`;
       case "newest":
         return sql`discovered_at DESC`;
       case "oldest":
         return sql`discovered_at ASC`;
       case "reviews_asc":
-        return sql`review_count ASC, score DESC`;
+        return sql`review_count ASC NULLS FIRST, score DESC`;
       case "reviews_desc":
-        return sql`review_count DESC`;
+        return sql`review_count DESC NULLS LAST`;
       case "name_asc":
         return sql`name ASC`;
       default:
-        return sql`score DESC, review_count ASC`;
+        return sql`score DESC, review_count ASC NULLS FIRST`;
     }
   }
 
@@ -274,19 +318,22 @@ export class PostgresStore implements Store {
       // from an ON CONFLICT UPDATE in the RETURNING clause.
       const rows = await sql<Row[]>`
         INSERT INTO leads (
-          source_id, source, name, niche, phone, website, website_host, address,
-          city, state, postal_code, lat, lng, maps_url, rating, review_count,
-          photo_count, has_hours, business_status, categories, score, tier,
-          signals, last_seen_at, territory_id
+          source_id, source, sources, source_refs, name, niche, phone, website,
+          website_host, address, city, state, postal_code, lat, lng, maps_url,
+          rating, review_count, photo_count, has_hours, business_status,
+          categories, score, tier, signals, last_seen_at, territory_id
         ) VALUES (
-          ${l.sourceId}, ${l.source}, ${l.name}, ${l.niche}, ${l.phone}, ${l.website},
-          ${l.websiteHost}, ${l.address}, ${l.city}, ${l.state}, ${l.postalCode},
-          ${l.lat}, ${l.lng}, ${l.mapsUrl}, ${l.rating}, ${l.reviewCount},
-          ${l.photoCount}, ${l.hasHours}, ${l.businessStatus},
-          ${jsonb(l.categories)}, ${l.score}, ${l.tier}, ${jsonb(l.signals)},
-          ${l.lastSeenAt}, ${l.territoryId}
+          ${l.sourceId}, ${l.source}, ${jsonb(l.sources)}, ${jsonb(l.sourceRefs)},
+          ${l.name}, ${l.niche}, ${l.phone}, ${l.website}, ${l.websiteHost},
+          ${l.address}, ${l.city}, ${l.state}, ${l.postalCode}, ${l.lat}, ${l.lng},
+          ${l.mapsUrl}, ${l.rating}, ${l.reviewCount}, ${l.photoCount},
+          ${l.hasHours}, ${l.businessStatus}, ${jsonb(l.categories)}, ${l.score},
+          ${l.tier}, ${jsonb(l.signals)}, ${l.lastSeenAt}, ${l.territoryId}
         )
         ON CONFLICT (source_id) DO UPDATE SET
+          source = EXCLUDED.source,
+          sources = EXCLUDED.sources,
+          source_refs = EXCLUDED.source_refs,
           name = EXCLUDED.name,
           phone = EXCLUDED.phone,
           website = EXCLUDED.website,
@@ -396,13 +443,13 @@ export class PostgresStore implements Store {
   }
 
   async createTerritory(
-    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound">,
+    t: Omit<Territory, "id" | "createdAt" | "lastScannedAt" | "leadsFound" | "lat" | "lng">,
   ): Promise<Territory> {
     await this.init();
     const sql = client();
     const rows = await sql<Row[]>`
-      INSERT INTO territories (label, area, state, niches, enabled)
-      VALUES (${t.label}, ${t.area}, ${t.state}, ${jsonb(t.niches)}, ${t.enabled})
+      INSERT INTO territories (label, area, state, niches, radius_km, enabled)
+      VALUES (${t.label}, ${t.area}, ${t.state}, ${jsonb(t.niches)}, ${t.radiusKm}, ${t.enabled})
       RETURNING *`;
     return toTerritory(rows[0]);
   }
@@ -410,12 +457,19 @@ export class PostgresStore implements Store {
   async updateTerritory(id: string, patch: Partial<Territory>): Promise<Territory | null> {
     await this.init();
     const sql = client();
+    // lat/lng can be explicitly set back to null (stale geocode), so they use
+    // presence checks rather than COALESCE.
+    const latProvided = "lat" in patch;
+    const lngProvided = "lng" in patch;
     const rows = await sql<Row[]>`
       UPDATE territories SET
         label           = COALESCE(${patch.label ?? null}, label),
         area            = COALESCE(${patch.area ?? null}, area),
         state           = COALESCE(${patch.state ?? null}, state),
         niches          = COALESCE(${patch.niches ? jsonb(patch.niches) : null}, niches),
+        radius_km       = COALESCE(${patch.radiusKm ?? null}, radius_km),
+        lat             = CASE WHEN ${latProvided} THEN ${patch.lat ?? null} ELSE lat END,
+        lng             = CASE WHEN ${lngProvided} THEN ${patch.lng ?? null} ELSE lng END,
         enabled         = COALESCE(${patch.enabled ?? null}, enabled),
         last_scanned_at = COALESCE(${patch.lastScannedAt ?? null}, last_scanned_at),
         leads_found     = COALESCE(${patch.leadsFound ?? null}, leads_found)
@@ -437,10 +491,11 @@ export class PostgresStore implements Store {
     await sql`
       INSERT INTO scan_runs (
         started_at, finished_at, territories_scanned, places_inspected,
-        new_leads, updated_leads, skipped, errors, demo_mode
+        new_leads, updated_leads, skipped, sources_used, errors, demo_mode
       ) VALUES (
         ${s.startedAt}, ${s.finishedAt}, ${s.territoriesScanned}, ${s.placesInspected},
-        ${s.newLeads}, ${s.updatedLeads}, ${s.skipped}, ${jsonb(s.errors)}, ${s.demoMode}
+        ${s.newLeads}, ${s.updatedLeads}, ${s.skipped}, ${jsonb(s.sourcesUsed)},
+        ${jsonb(s.errors)}, ${s.demoMode}
       )`;
   }
 
@@ -456,8 +511,25 @@ export class PostgresStore implements Store {
       newLeads: Number(r.new_leads),
       updatedLeads: Number(r.updated_leads),
       skipped: Number(r.skipped),
+      sourcesUsed: (r.sources_used ?? []) as SourceId[],
       errors: (r.errors ?? []) as string[],
       demoMode: Boolean(r.demo_mode),
     }));
+  }
+
+  async getPref(key: string): Promise<unknown | null> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`SELECT value FROM app_prefs WHERE key = ${key}`;
+    return rows[0]?.value ?? null;
+  }
+
+  async setPref(key: string, value: unknown): Promise<void> {
+    await this.init();
+    const sql = client();
+    await sql`
+      INSERT INTO app_prefs (key, value, updated_at)
+      VALUES (${key}, ${jsonb(value)}, now())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
   }
 }

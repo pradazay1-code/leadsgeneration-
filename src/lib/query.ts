@@ -1,6 +1,16 @@
 import { TIER_ORDER } from "./scoring";
 import { isNicheId } from "./niches";
-import { LEAD_STATUSES, type LeadFilters, type LeadSort, type LeadStatus, type NicheId, type PresenceTier } from "./types";
+import {
+  LEAD_STATUSES,
+  type LeadFilters,
+  type LeadSort,
+  type LeadStatus,
+  type NicheId,
+  type PresenceTier,
+  type SourceId,
+} from "./types";
+
+const SOURCE_IDS: SourceId[] = ["bizdata", "osm", "yelp", "google_places", "manual", "demo"];
 
 const SORTS: LeadSort[] = [
   "score_desc",
@@ -45,6 +55,9 @@ export function parseLeadFilters(params: URLSearchParams): LeadFilters {
   const statuses = multi(params, "status").filter((s): s is LeadStatus =>
     (LEAD_STATUSES as string[]).includes(s),
   );
+  const sources = multi(params, "source").filter((s): s is SourceId =>
+    (SOURCE_IDS as string[]).includes(s),
+  );
 
   const sortRaw = params.get("sort");
   const sort = sortRaw && (SORTS as string[]).includes(sortRaw) ? (sortRaw as LeadSort) : "score_desc";
@@ -57,6 +70,7 @@ export function parseLeadFilters(params: URLSearchParams): LeadFilters {
     niches: niches.length ? niches : undefined,
     tiers: tiers.length ? tiers : undefined,
     statuses: statuses.length ? statuses : undefined,
+    sources: sources.length ? sources : undefined,
     states: multi(params, "state").length ? multi(params, "state") : undefined,
     cities: multi(params, "city").length ? multi(params, "city") : undefined,
     minScore: num(params, "minScore"),
@@ -78,6 +92,7 @@ export function filtersToParams(f: LeadFilters): URLSearchParams {
   f.niches?.forEach((v) => p.append("niche", v));
   f.tiers?.forEach((v) => p.append("tier", v));
   f.statuses?.forEach((v) => p.append("status", v));
+  f.sources?.forEach((v) => p.append("source", v));
   f.states?.forEach((v) => p.append("state", v));
   f.cities?.forEach((v) => p.append("city", v));
   if (typeof f.minScore === "number") p.set("minScore", String(f.minScore));

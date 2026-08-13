@@ -87,6 +87,8 @@ export const NICHES: Record<NicheId, NicheConfig> = {
       "garage cleanout {area}",
     ],
     includeTypes: [
+      "junk_removal",
+      "dumpster_rental",
       "moving_company",
       "general_contractor",
       "storage",

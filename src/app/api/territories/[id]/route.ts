@@ -21,9 +21,17 @@ export async function PATCH(request: Request, { params }: Ctx) {
 
   const patch: Partial<Territory> = {};
   if (typeof body.label === "string" && body.label.trim()) patch.label = body.label.trim().slice(0, 80);
-  if (typeof body.area === "string" && body.area.trim()) patch.area = body.area.trim().slice(0, 120);
+  if (typeof body.area === "string" && body.area.trim()) {
+    patch.area = body.area.trim().slice(0, 120);
+    // A new area means the cached geocode is stale; the next scan re-geocodes.
+    patch.lat = null;
+    patch.lng = null;
+  }
   if (typeof body.state === "string") patch.state = body.state.trim().toUpperCase();
   if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+  if (typeof body.radiusKm === "number" && Number.isFinite(body.radiusKm)) {
+    patch.radiusKm = Math.min(Math.max(Math.round(body.radiusKm), 2), 50);
+  }
   if (Array.isArray(body.niches)) {
     const niches = body.niches.filter((n): n is NicheId => typeof n === "string" && isNicheId(n));
     if (niches.length) patch.niches = niches;

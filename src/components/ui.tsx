@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import { TIER_META } from "@/lib/scoring";
-import type { LeadStatus, PresenceTier } from "@/lib/types";
+import type { LeadStatus, PresenceTier, SourceId } from "@/lib/types";
 
 /* ------------------------------------------------------------------ Button */
 
@@ -84,6 +84,39 @@ export function TierBadge({ tier, className }: { tier: PresenceTier; className?:
     <Badge title={TIER_META[tier].description} className={cn(TIER_CLASSES[tier], className)}>
       {TIER_META[tier].label}
     </Badge>
+  );
+}
+
+/* ----------------------------------------------------------- SourceBadge */
+
+export const SOURCE_META: Record<SourceId, { label: string; className: string }> = {
+  bizdata: { label: "BizData", className: "border-teal-500/30 bg-teal-500/10 text-teal-300" },
+  osm: { label: "OSM", className: "border-lime-500/30 bg-lime-500/10 text-lime-300" },
+  yelp: { label: "Yelp", className: "border-red-500/25 bg-red-500/10 text-red-300" },
+  google_places: { label: "Google", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
+  manual: { label: "Manual", className: "border-line-strong bg-surface-3 text-ink-3" },
+  demo: { label: "Sample", className: "border-amber-500/30 bg-amber-500/10 text-amber-300" },
+};
+
+/** Compact row of platform badges showing where a lead was seen. */
+export function SourceBadges({ sources, className }: { sources: SourceId[]; className?: string }) {
+  const visible = sources.filter((s) => s !== "demo" && s !== "manual");
+  if (!visible.length) return null;
+  return (
+    <span className={cn("inline-flex flex-wrap items-center gap-1", className)}>
+      {visible.map((s) => (
+        <span
+          key={s}
+          title={`Seen on ${SOURCE_META[s].label}`}
+          className={cn(
+            "rounded border px-1 py-px text-[10px] font-semibold leading-4",
+            SOURCE_META[s].className,
+          )}
+        >
+          {SOURCE_META[s].label}
+        </span>
+      ))}
+    </span>
   );
 }
 
