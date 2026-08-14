@@ -261,7 +261,7 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
   }
 
   // ---- Cross-platform footprint -------------------------------------------
-  const realSources = biz.sources.filter((s) => s !== "manual" && s !== "demo");
+  const realSources = biz.sources.filter((s) => s !== "manual");
   if (biz.checkedSources.length >= 2) {
     if (realSources.length === 1) {
       signals.push({

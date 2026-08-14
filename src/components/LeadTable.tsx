@@ -91,18 +91,6 @@ function ReviewsCell({ lead }: { lead: Lead }) {
   );
 }
 
-function DemoTag({ lead }: { lead: Lead }) {
-  if (lead.source !== "demo") return null;
-  return (
-    <span
-      className="rounded border border-amber-500/30 bg-amber-500/10 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-amber-300"
-      title="Fictional sample row — replaced the moment your first real scan runs"
-    >
-      Sample
-    </span>
-  );
-}
-
 export function LeadTable({
   leads,
   selectedId,
@@ -149,7 +137,6 @@ export function LeadTable({
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-ink">{lead.name}</span>
-                    <DemoTag lead={lead} />
                   </div>
                   <div className="mt-0.5 truncate text-[12px] text-ink-3">
                     {NICHES[lead.niche].shortLabel}
@@ -208,7 +195,6 @@ export function LeadTable({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-ink">{lead.name}</span>
-                    <DemoTag lead={lead} />
                   </div>
                   <div className="mt-0.5 text-[12px] text-ink-3">
                     {NICHES[lead.niche].shortLabel}

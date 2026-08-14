@@ -49,18 +49,19 @@ function buildQuery(niche: NicheId, lat: number, lng: number, radiusKm: number):
 out tags center 200;`;
   }
 
-  // Junk removal: name-pattern match, constrained to elements that are at
-  // least tagged as some kind of business so we don't match street names.
-  const namePattern = "junk|hauling|haul away|cleanout|clean out|rubbish|debris removal|dumpster";
+  // Junk removal: OSM has no category for it, so match on the business name.
+  // Requiring a second tag (office/shop/craft…) as well was far too strict —
+  // most of these operators are mapped as a bare named node. Instead, match any
+  // named element and exclude the feature types that produce false positives
+  // (roads, waterways, land parcels named "Junk Lane" and the like).
+  const namePattern =
+    "junk|hauling|haul[- ]?away|cleanout|clean[- ]?out|rubbish|debris|dumpster|carting|refuse|scrap";
   return `[out:json][timeout:25];
 (
-  nwr["name"~"${namePattern}",i]["office"]${around};
-  nwr["name"~"${namePattern}",i]["shop"]${around};
-  nwr["name"~"${namePattern}",i]["craft"]${around};
-  nwr["name"~"${namePattern}",i]["amenity"]${around};
-  nwr["name"~"${namePattern}",i]["landuse"="industrial"]${around};
-  nwr["name"~"${namePattern}",i]["phone"]${around};
-  nwr["name"~"${namePattern}",i]["contact:phone"]${around};
+  nwr["name"~"${namePattern}",i]${around}["highway"!~"."]["waterway"!~"."]["natural"!~"."]["boundary"!~"."]["place"!~"."]["railway"!~"."];
+  nwr["waste"~"transfer_station|disposal"]${around};
+  nwr["amenity"="waste_transfer_station"]${around};
+  nwr["industrial"="scrap_yard"]${around};
 );
 out tags center 200;`;
 }
@@ -136,7 +137,7 @@ export const osmProvider: SourceProvider = {
 
   statusDetail(): string {
     if (!this.isConfigured()) return "Disabled via OSM_DISABLED=1.";
-    return "Free Overpass queries against OpenStreetMap — no key needed. Finds junk removal by name pattern.";
+    return "Free, no key. Finds junk removal by name pattern, but most US service businesses simply aren't mapped in OpenStreetMap — expect few hits. Needs a working geocoder, which often blocks cloud hosts.";
   },
 
   supportsNiche(): boolean {

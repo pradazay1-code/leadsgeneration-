@@ -86,7 +86,7 @@ export const yelpProvider: SourceProvider = {
 
   statusDetail(): string {
     if (!this.isConfigured()) {
-      return "Set YELP_API_KEY to enable. Yelp offers a 30-day trial (5,000 calls), then pay-per-call — it's the main source of review counts.";
+      return "Good second source. Yelp offers a 30-day trial (5,000 calls), then pay-per-call. Strong coverage of these niches plus review counts. Set YELP_API_KEY and redeploy.";
     }
     return "Connected. Supplies review counts — the strongest public signal of how new a business is.";
   },

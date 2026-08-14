@@ -12,7 +12,6 @@ const SOURCE_NAMES: Record<string, string> = {
   yelp: "Yelp",
   google_places: "Google",
   manual: "Manual",
-  demo: "Sample",
 };
 
 const COLUMNS: Array<{ header: string; value: (l: Lead) => string }> = [

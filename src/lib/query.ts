@@ -10,7 +10,7 @@ import {
   type SourceId,
 } from "./types";
 
-const SOURCE_IDS: SourceId[] = ["bizdata", "osm", "yelp", "google_places", "manual", "demo"];
+const SOURCE_IDS: SourceId[] = ["bizdata", "osm", "yelp", "google_places", "manual"];
 
 const SORTS: LeadSort[] = [
   "score_desc",

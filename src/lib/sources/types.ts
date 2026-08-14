@@ -88,7 +88,6 @@ export const SOURCE_PRIORITY: SourceId[] = [
   "bizdata",
   "osm",
   "manual",
-  "demo",
 ];
 
 export const SOURCE_LABELS: Record<SourceId, string> = {
@@ -97,7 +96,6 @@ export const SOURCE_LABELS: Record<SourceId, string> = {
   yelp: "Yelp",
   google_places: "Google Places",
   manual: "Manual",
-  demo: "Sample",
 };
 
 /** Shared fetch wrapper: UA header, timeout, JSON parse, typed errors. */

@@ -10,6 +10,7 @@ import type {
   PresenceTier,
   ScanRunSummary,
   ScoreSignal,
+  SourceScanStat,
   SourceId,
   SourceRefs,
   Territory,
@@ -190,6 +191,7 @@ export class PostgresStore implements Store {
         updated_leads        integer NOT NULL DEFAULT 0,
         skipped              integer NOT NULL DEFAULT 0,
         sources_used         jsonb   NOT NULL DEFAULT '[]'::jsonb,
+        source_stats         jsonb   NOT NULL DEFAULT '[]'::jsonb,
         errors               jsonb   NOT NULL DEFAULT '[]'::jsonb,
         demo_mode            boolean NOT NULL DEFAULT false
       )`;
@@ -211,6 +213,7 @@ export class PostgresStore implements Store {
     await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS lat double precision`;
     await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS lng double precision`;
     await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS sources_used jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS source_stats jsonb NOT NULL DEFAULT '[]'::jsonb`;
 
     await sql`CREATE INDEX IF NOT EXISTS leads_score_idx ON leads (score DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_discovered_idx ON leads (discovered_at DESC)`;
@@ -491,11 +494,11 @@ export class PostgresStore implements Store {
     await sql`
       INSERT INTO scan_runs (
         started_at, finished_at, territories_scanned, places_inspected,
-        new_leads, updated_leads, skipped, sources_used, errors, demo_mode
+        new_leads, updated_leads, skipped, sources_used, source_stats, errors, demo_mode
       ) VALUES (
         ${s.startedAt}, ${s.finishedAt}, ${s.territoriesScanned}, ${s.placesInspected},
         ${s.newLeads}, ${s.updatedLeads}, ${s.skipped}, ${jsonb(s.sourcesUsed)},
-        ${jsonb(s.errors)}, ${s.demoMode}
+        ${jsonb(s.sourceStats)}, ${jsonb(s.errors)}, ${s.noSourcesConfigured}
       )`;
   }
 
@@ -512,8 +515,9 @@ export class PostgresStore implements Store {
       updatedLeads: Number(r.updated_leads),
       skipped: Number(r.skipped),
       sourcesUsed: (r.sources_used ?? []) as SourceId[],
+      sourceStats: (r.source_stats ?? []) as SourceScanStat[],
       errors: (r.errors ?? []) as string[],
-      demoMode: Boolean(r.demo_mode),
+      noSourcesConfigured: Boolean(r.demo_mode),
     }));
   }
 

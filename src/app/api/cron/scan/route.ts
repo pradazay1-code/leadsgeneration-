@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { runScan } from "@/lib/scan";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 /**
  * Daily sweep, wired up in vercel.json.

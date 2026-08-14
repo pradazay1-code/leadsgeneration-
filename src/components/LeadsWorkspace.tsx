@@ -30,6 +30,7 @@ import type {
 import { FilterRail } from "./FilterRail";
 import { LeadDrawer } from "./LeadDrawer";
 import { LeadTable, SortSelect } from "./LeadTable";
+import { SetupChecklist } from "./SetupChecklist";
 import { StatRow } from "./StatRow";
 import { Button, Chip, EmptyState, Spinner } from "./ui";
 
@@ -43,10 +44,17 @@ interface LeadsResponse {
 interface StatsResponse {
   stats: LeadStats;
   recentScans: ScanRunSummary[];
-  demoData: boolean;
   providers: ProviderStatus[];
   storeKind: string;
 }
+
+const SOURCE_LABEL: Record<string, string> = {
+  google_places: "Google",
+  yelp: "Yelp",
+  bizdata: "BizData",
+  osm: "OpenStreetMap",
+  manual: "Manual",
+};
 
 const PRESETS: Array<{ label: string; hint: string; patch: Partial<FilterState> }> = [
   {
@@ -278,20 +286,15 @@ export function LeadsWorkspace() {
   return (
     <div className="space-y-5">
       {/* Environment banners */}
-      {meta?.demoData ? (
+      {meta && meta.stats.total === 0 && !scanning ? (
         <Banner
           tone="warn"
-          title="Showing fictional sample data — run your first scan"
-          body={
-            "BizData and OpenStreetMap are free and already connected, so “Scan now” works with zero setup. " +
-            (keyedProviders === 0
-              ? "Add a Yelp key in Vercel to grade business age by review count (recommended)."
-              : "Your first scan will replace these sample rows with real businesses.")
-          }
+          title="No leads yet — finish setup, then run a scan"
+          body="This app only ever shows real businesses it finds; it never invents sample data. Run the system check below to see exactly what still needs connecting."
         />
       ) : null}
 
-      {meta && !meta.demoData && meta.storeKind === "memory" ? (
+      {meta && meta.storeKind === "memory" ? (
         <Banner
           tone="warn"
           title="Leads aren't being saved permanently"
@@ -303,15 +306,22 @@ export function LeadsWorkspace() {
         <Banner
           tone={scanResult.errors.length ? "warn" : "good"}
           title={
-            scanResult.demoMode
-              ? "Scan skipped — every source is disabled"
+            scanResult.noSourcesConfigured
+              ? "Scan couldn't run — no data source connected"
               : `Scan finished — ${scanResult.newLeads} new, ${scanResult.updatedLeads} refreshed`
           }
           body={
             scanResult.errors.length
               ? scanResult.errors.slice(0, 3).join(" · ")
-              : `Checked ${scanResult.placesInspected} listings across ${scanResult.territoriesScanned} territor${scanResult.territoriesScanned === 1 ? "y" : "ies"} via ${scanResult.sourcesUsed.length} source${scanResult.sourcesUsed.length === 1 ? "" : "s"}. ${scanResult.skipped} filtered out as established or off-niche.`
+              : `Checked ${scanResult.placesInspected} listings across ${scanResult.territoriesScanned} territor${scanResult.territoriesScanned === 1 ? "y" : "ies"}. ${scanResult.skipped} filtered out as established, franchise, or off-niche.`
           }
+          detail={scanResult.sourceStats
+            .map((s) =>
+              s.skipped
+                ? `${SOURCE_LABEL[s.source] ?? s.source}: skipped (${s.skipReason ?? "n/a"})`
+                : `${SOURCE_LABEL[s.source] ?? s.source}: ${s.returned} listing${s.returned === 1 ? "" : "s"}${s.errors.length ? ` — ${s.errors.length} error(s)` : ""}`,
+            )
+            .join("  ·  ")}
           onDismiss={() => setScanResult(null)}
         />
       ) : null}
@@ -378,6 +388,8 @@ export function LeadsWorkspace() {
         </div>
       </div>
 
+      {meta && meta.stats.total === 0 ? <SetupChecklist /> : null}
+
       <div
         className={cn(
           "grid grid-cols-1 gap-5",
@@ -402,12 +414,28 @@ export function LeadsWorkspace() {
           ) : rows.length === 0 ? (
             <EmptyState
               icon={<SearchX className="size-5" />}
-              title="No leads match these filters"
-              description="Loosen the score threshold or clear a filter or two. If the pipeline is empty entirely, add a territory and run a scan."
+              title={
+                meta && meta.stats.total === 0
+                  ? "Nothing scanned yet"
+                  : "No leads match these filters"
+              }
+              description={
+                meta && meta.stats.total === 0
+                  ? "Add a territory, connect a data source, then hit Scan now. Real businesses only — this app never shows made-up sample leads."
+                  : "Loosen the score threshold or clear a filter or two."
+              }
               action={
-                <Button variant="subtle" onClick={() => updateFilters(DEFAULT_FILTERS)}>
-                  Reset filters
-                </Button>
+                meta && meta.stats.total === 0 ? (
+                  <a href="/territories" className="focus-ring">
+                    <Button variant="primary" tabIndex={-1}>
+                      Add a territory
+                    </Button>
+                  </a>
+                ) : (
+                  <Button variant="subtle" onClick={() => updateFilters(DEFAULT_FILTERS)}>
+                    Reset filters
+                  </Button>
+                )
               }
             />
           ) : (
@@ -455,11 +483,14 @@ export function Banner({
   tone,
   title,
   body,
+  detail,
   onDismiss,
 }: {
   tone: keyof typeof BANNER_TONES;
   title: string;
   body: string;
+  /** Optional per-source breakdown shown in small mono text. */
+  detail?: string;
   onDismiss?: () => void;
 }) {
   const { wrap, icon, Icon } = BANNER_TONES[tone];
@@ -469,6 +500,9 @@ export function Banner({
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-semibold text-ink">{title}</p>
         <p className="mt-0.5 text-[13px] leading-relaxed text-ink-2">{body}</p>
+        {detail ? (
+          <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-ink-3">{detail}</p>
+        ) : null}
       </div>
       {onDismiss ? (
         <button

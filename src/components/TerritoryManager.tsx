@@ -110,8 +110,8 @@ export function TerritoryManager() {
         <Banner
           tone={scanResult.errors.length ? "warn" : "good"}
           title={
-            scanResult.demoMode
-              ? "Scan skipped — no Places API key configured"
+            scanResult.noSourcesConfigured
+              ? "Scan couldn't run — no data source connected"
               : `Scan finished — ${scanResult.newLeads} new, ${scanResult.updatedLeads} refreshed`
           }
           body={

@@ -90,7 +90,7 @@ export const bizdataProvider: SourceProvider = {
 
   statusDetail(): string {
     if (!this.isConfigured()) return "Disabled via BIZDATA_DISABLED=1.";
-    return "Free OpenStreetMap-backed business API — no key needed. Covers the real-estate niche.";
+    return "Free, no key. Real-estate niche only. Backed by OpenStreetMap, whose US coverage of small businesses is thin (~20-40%) — treat it as a supplement, not your main source.";
   },
 
   supportsNiche(niche: NicheId): boolean {

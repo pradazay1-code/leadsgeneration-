@@ -3,85 +3,105 @@
 A lead-discovery app for a marketing agency that sells websites, marketing, and CRM
 solutions to **junk removal companies** and **real estate agents**.
 
-Every morning it sweeps the towns you tell it to watch across **multiple data sources**,
-merges everything it finds into one lead per business, and keeps only the ones that look
-like **newer operators with little or no online presence** — no website, few or no
-reviews, listed on only one platform. Established players and national franchises are
-filtered out automatically, because they already have what you sell.
+It sweeps the towns you choose, merges what it finds across data sources into one lead
+per business, and keeps only the ones that look like **newer operators with little or no
+online presence**. Established players and national franchises are filtered out
+automatically.
 
-## Data sources
+**It never shows made-up data.** If the list is empty, nothing has been found yet — and
+the built-in **System check** tells you exactly why.
 
-| Source | Cost | What it contributes |
+---
+
+## Read this first: you need a Google Places key
+
+Be realistic about the free sources. OpenStreetMap-derived data (BizData, Overpass)
+covers roughly **20–40% of US small businesses**, and junk removal companies are barely
+mapped at all — most are one truck and a phone number that nobody has added to OSM.
+OpenStreetMap's geocoder also routinely blocks cloud hosts like Vercel.
+
+**For a system that actually finds leads every day, connect Google Places.** It's the
+only source with real coverage of these two niches, it needs no geocoder, and its
+"no website on file" is authoritative rather than a guess.
+
+| Source | Cost | Reality |
 |---|---|---|
-| **BizData** (`bizdata-web.vercel.app`) | Free, **no key needed** | OpenStreetMap-backed business search — names, phones, websites, hours. Covers the real-estate niche. |
-| **OpenStreetMap Overpass** | Free, **no key needed** | Direct OSM queries with name-pattern matching — this is what finds junk removal companies (OSM has no category for them). |
-| **Yelp Fusion API** (optional) | 30-day trial (5,000 calls), then pay-per-call from $7.99/1k | The main source of **review counts** — the best public signal of how new a business is. Also catches businesses OSM doesn't have. Official API; scraping Yelp's site violates their ToS and breaks constantly, so this uses the sanctioned route. |
-| **Google Places API (New)** (optional) | Monthly free allowance, then paid | The only source whose "no website on file" is definitive; adds photos/hours completeness signals. |
+| **Google Places (New)** | Free monthly allowance, then paid | **Required for real results.** Comprehensive coverage of both niches. |
+| **Yelp Fusion** | 30-day trial (5,000 calls), then pay-per-call | Strong second source; best supplier of review counts. |
+| BizData | Free, no key | Real-estate only, thin OSM coverage. Supplement. |
+| OpenStreetMap Overpass | Free, no key | Few US service businesses are mapped. Supplement. |
 
-**The free pair works with zero setup** — deploy and hit "Scan now". Each additional key
-makes the scoring smarter, and the score is normalised against what the connected
-sources can actually know, so numbers stay comparable as you add keys.
+### Getting the Google Places key
 
-Attribution: business data includes content © OpenStreetMap contributors (ODbL). Yelp
-data © Yelp, and each Yelp-found lead links back to its Yelp page.
+1. [Google Cloud Console](https://console.cloud.google.com/) → create a project.
+2. APIs & Services → Library → enable **Places API (New)**.
+3. Attach a billing account (required even inside the free allowance).
+4. Credentials → Create credentials → API key.
+5. Vercel → your project → Settings → Environment Variables → `GOOGLE_PLACES_API_KEY` →
+   **Redeploy** (env vars only take effect on a new deployment).
+
+Set a budget alert in Google Cloud. A handful of territories scanned daily normally
+stays inside the free allowance.
+
+---
+
+## Setup
+
+1. **Import to Vercel** — framework auto-detects as Next.js, nothing to configure.
+2. **Add Postgres** — Vercel → Storage → Create Database → Postgres. `POSTGRES_URL` is
+   injected automatically. **Without this, scanned leads vanish**: serverless requests
+   hit different machines, so in-memory leads disappear the moment you reload.
+3. **Add `GOOGLE_PLACES_API_KEY`** (see above), and optionally `YELP_API_KEY`.
+4. **Redeploy.**
+5. Open **Settings → System check**. It runs a live test query against every source and
+   tells you what's still broken and how to fix it. Everything should read *Working*.
+6. Add a territory ("Norwood, MA"), hit **Scan now**.
+
+Other env vars: `CRON_SECRET` (locks the daily scan endpoint — `openssl rand -hex 32`),
+`APP_PASSWORD` (password-gates the whole app), `BIZDATA_DISABLED=1` / `OSM_DISABLED=1`.
+
+## When a scan finds nothing
+
+The scan result banner shows a **per-source breakdown** (`Google: 42 listings · Yelp:
+skipped · OpenStreetMap: 0`), so a zero is never silent. Common causes:
+
+- **No source connected** — the banner says so outright. Add the Google key.
+- **Only free sources connected** — expect very few hits, especially for junk removal.
+- **Town not recognised** — use `Town, ST` format.
+- **Everything filtered out** — the banner says "found N listings but none cleared the
+  bar". Those were established businesses or franchises. Drop the minimum score slider
+  to see them.
+- **Time budget reached** — scans stop cleanly at ~45s (Vercel's function ceiling) and
+  save what they found. Run again, or split big territories into individual towns.
 
 ## What you get
 
-- **Leads workspace** — one row per business, merged across sources (matched by phone
-  number, then name + town), with "Seen on" badges. Click any row for the score
-  breakdown, tap-to-call, links to each platform listing, a suggested cold-open line
-  written from that lead's biggest gap, pipeline stages (new → contacted → responded →
-  qualified → won/lost), and autosaving notes.
-- **Opportunity score (0–100)** — higher = newer business, thinner footprint. "Not
-  listed on any review platform" and "found on only one platform" are scored signals,
-  with the exact breakdown shown on every lead.
-- **Filters** — industry, presence tier, minimum score, max combined reviews,
-  has-website/phone, discovery window, pipeline status, **source platform**, state,
-  town, free-text search, plus one-click presets. Your saved view syncs **server-side**,
-  so any device shows the same workspace.
-- **Territories** — town + industries + search radius. The daily cron sweeps every
-  enabled territory; scan any one on demand.
-- **CSV export** of the current filtered view, with source platforms and Yelp links.
-
-Until the first scan runs, the app shows clearly-labelled fictional sample data.
-
-## Deploy to Vercel
-
-1. Import the repo at [vercel.com/new](https://vercel.com/new). Framework: **Next.js**,
-   no settings to change. It deploys and runs on the free sources immediately.
-
-2. **Make data permanent (do this one)**: in your Vercel project → **Storage** →
-   **Create Database** → Postgres (Neon). `POSTGRES_URL` is injected automatically —
-   redeploy and every lead, note, territory, and your saved filter view lives
-   server-side. Open the app from your phone, laptop, anywhere — same pipeline.
-
-3. **Optional keys** (Project → Settings → Environment Variables):
-
-   | Variable | What it does |
-   |---|---|
-   | `YELP_API_KEY` | Enables Yelp — recommended, it grades business age by review count. Get one at business.yelp.com (30-day trial). |
-   | `GOOGLE_PLACES_API_KEY` | Enables Google Places — definitive website data. |
-   | `CRON_SECRET` | Locks the daily-scan endpoint (`openssl rand -hex 32`). Vercel Cron sends it automatically. |
-   | `APP_PASSWORD` | Puts a password gate in front of the whole app. |
-   | `BIZDATA_BASE_URL` / `OVERPASS_URL` | Override the free endpoints if you self-host them. |
-   | `BIZDATA_DISABLED=1` / `OSM_DISABLED=1` | Turn a free source off. |
-
-4. The daily sweep is wired in `vercel.json` (11:00 UTC ≈ 6–7 AM Eastern). Add your
-   territories, hit **Scan now** once, and start calling.
+- **Leads workspace** — one row per business, merged across sources, with "Seen on"
+  badges. Click a row for the score breakdown, tap-to-call, links to each platform
+  listing, a suggested cold-open line built from that lead's biggest gap, pipeline
+  stages, and autosaving notes.
+- **Opportunity score (0–100)** — higher = newer, thinner footprint. Normalised against
+  what the connected sources can actually know, so scores stay comparable as you add keys.
+- **Filters** — industry, presence tier, score, review count, website/phone, discovery
+  window, pipeline status, source platform, state, town, search, plus presets. Your view
+  syncs server-side, so any device shows the same workspace.
+- **Territories** — town + industries + radius. Daily cron sweeps every enabled one.
+- **CSV export** of the filtered view.
+- **System check** — live probe of database, territories, geocoder, and every source.
 
 ## Local development
 
 ```bash
 npm install
-cp .env.example .env.local   # everything optional — free sources work with no keys
+cp .env.example .env.local
 npm run dev
 ```
 
 ## How scoring works
 
-Weights live in [`src/lib/scoring.ts`](src/lib/scoring.ts); niche queries, franchise
-blocklists, and "not a real website" domains in [`src/lib/niches.ts`](src/lib/niches.ts);
-cross-source merging in [`src/lib/merge.ts`](src/lib/merge.ts). The short version:
+Weights in [`src/lib/scoring.ts`](src/lib/scoring.ts), niche queries and franchise
+blocklists in [`src/lib/niches.ts`](src/lib/niches.ts), cross-source merging in
+[`src/lib/merge.ts`](src/lib/merge.ts).
 
 | Signal | Points |
 |---|---|
@@ -92,27 +112,20 @@ cross-source merging in [`src/lib/merge.ts`](src/lib/merge.ts). The short versio
 | Not listed on any review platform checked | +20 |
 | 0 / ≤3 / ≤10 / ≤25 combined reviews | +24 / +20 / +15 / +9 |
 | Found on only one platform | +6 |
-| Phone listed (you can actually reach them) | +6 |
+| Phone listed | +6 |
 | Missing photos / hours (when Google checked) | +9 / +7 |
 | Has a real independent website | −10 |
 | Listed on 3+ platforms | −6 |
 | 61–150 / 150+ combined reviews | −12 / −25 |
 
-The raw total is normalised against the best case achievable with the sources that were
-actually checked, so 80 means the same thing in free-only mode as with every key set.
+Franchises (1-800-GOT-JUNK, Junk King, Keller Williams, RE/MAX, …), closed listings, and
+off-niche matches are dropped before scoring. Re-scans refresh public data but never
+touch your pipeline status, notes, or discovery dates; leads dedupe on phone number,
+falling back to name + town.
 
-National franchises (1-800-GOT-JUNK, Junk King, Keller Williams, RE/MAX, …), closed
-listings, and off-niche matches are dropped before they reach the list. Re-scans refresh
-public data but never touch your pipeline status, notes, or discovery dates, and leads
-never duplicate — they dedupe on phone number (falling back to name + town).
+## Data use
 
-## Notes on data use
-
-BizData and Overpass serve OpenStreetMap data under the ODbL (attribution shown in the
-app). Yelp and Google data come through their official APIs under your own keys and
-their terms — this app deliberately does not scrape either site's HTML. OSM's US
-coverage of small-business fields (phone, website) runs roughly 20–40%, which is exactly
-why the scanner cross-references multiple sources and marks "no website found" as
-unverified until a definitive source confirms it. Check DNC rules before cold-calling,
-and keep outreach honest: the suggested openers name a real observed gap, not a fake
-audit.
+Google and Yelp data come through their official APIs under your own keys and their
+terms — this app does not scrape either site. OpenStreetMap-derived data is ODbL,
+attributed in the app. Check DNC rules before cold-calling, and keep outreach honest:
+the suggested openers name a real observed gap, not a fake audit.

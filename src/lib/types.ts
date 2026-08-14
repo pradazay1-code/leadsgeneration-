@@ -1,7 +1,7 @@
 export type NicheId = "junk_removal" | "real_estate";
 
 /** Where a lead's data can come from. */
-export type SourceId = "bizdata" | "osm" | "yelp" | "google_places" | "manual" | "demo";
+export type SourceId = "bizdata" | "osm" | "yelp" | "google_places" | "manual";
 
 /** Per-source reference back to the original listing. */
 export interface SourceRef {
@@ -136,6 +136,20 @@ export interface Territory {
   leadsFound: number;
 }
 
+/** Per-source outcome for one scan run — this is what makes failures visible. */
+export interface SourceScanStat {
+  source: SourceId;
+  /** Raw listings the provider returned across all territories. */
+  returned: number;
+  /** Queries attempted. */
+  queries: number;
+  /** Errors this provider hit, verbatim. */
+  errors: string[];
+  /** True when the provider was skipped (not configured / niche unsupported). */
+  skipped: boolean;
+  skipReason?: string;
+}
+
 export interface ScanRunSummary {
   startedAt: string;
   finishedAt: string;
@@ -143,12 +157,15 @@ export interface ScanRunSummary {
   placesInspected: number;
   newLeads: number;
   updatedLeads: number;
+  /** Candidates dropped as established, franchise, off-niche, or below cutoff. */
   skipped: number;
-  /** Which providers actually ran. */
+  /** Which providers actually returned data. */
   sourcesUsed: SourceId[];
+  /** Full per-source breakdown, so a silent zero is always explainable. */
+  sourceStats: SourceScanStat[];
   errors: string[];
-  /** True when no source was able to run and the scan was a no-op. */
-  demoMode: boolean;
+  /** True when no source could run at all. */
+  noSourcesConfigured: boolean;
 }
 
 export interface LeadFilters {

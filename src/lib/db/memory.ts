@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { LeadFilters, ScanRunSummary, Territory, Lead, LeadStats } from "../types";
-import { buildDemoLeads, buildDemoTerritories } from "./demo";
 import { computeStats, matchesFilters, sortLeads } from "./filters";
 import type { Facets, LeadPage, LeadPatch, LeadUpsert, Store, UpsertResult } from "./store";
 
@@ -35,21 +34,13 @@ export class MemoryStore implements Store {
   readonly kind = "memory" as const;
 
   async init(): Promise<void> {
-    const s = state();
-    if (s.seeded) return;
-    s.seeded = true;
-    // Seed demo content only when nothing real has been scanned yet.
-    if (s.leads.size === 0) {
-      for (const lead of buildDemoLeads()) s.leads.set(lead.id, lead);
-    }
-    if (s.territories.size === 0) {
-      for (const t of buildDemoTerritories()) s.territories.set(t.id, t);
-    }
+    // Nothing to seed. This store starts empty and only ever holds real
+    // scanned leads — the app never fabricates businesses.
+    state().seeded = true;
   }
 
   async isDemo(): Promise<boolean> {
-    const s = state();
-    return [...s.leads.values()].every((l) => l.source === "demo");
+    return false;
   }
 
   async listLeads(filters: LeadFilters): Promise<LeadPage> {
@@ -92,13 +83,6 @@ export class MemoryStore implements Store {
       }
     }
 
-    // First real scan clears the fictional demo rows so they can never be
-    // confused with scanned businesses.
-    if (inserted > 0) {
-      for (const [id, lead] of s.leads) {
-        if (lead.source === "demo") s.leads.delete(id);
-      }
-    }
 
     return { inserted, updated };
   }

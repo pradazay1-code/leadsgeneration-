@@ -19,12 +19,12 @@ import { TIER_META, TIER_ORDER } from "@/lib/scoring";
 import { NICHE_LIST } from "@/lib/niches";
 import type { LeadStats, ProviderStatus, ScanRunSummary, SourceId } from "@/lib/types";
 import { Banner } from "./LeadsWorkspace";
+import { SetupChecklist } from "./SetupChecklist";
 import { Button, SOURCE_META, Spinner } from "./ui";
 
 interface StatsResponse {
   stats: LeadStats;
   recentScans: ScanRunSummary[];
-  demoData: boolean;
   providers: ProviderStatus[];
   storeKind: string;
 }
@@ -124,6 +124,8 @@ export function SettingsPanel() {
       {error ? (
         <Banner tone="bad" title="Something went wrong" body={error} onDismiss={() => setError(null)} />
       ) : null}
+
+      <SetupChecklist />
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* Data sources */}
@@ -245,7 +247,13 @@ export function SettingsPanel() {
                 <span className="text-ink-3">{s.updatedLeads} refreshed</span>
                 <span className="text-ink-3">{s.placesInspected} checked</span>
                 <span className="text-ink-3">
-                  via {s.sourcesUsed.length ? s.sourcesUsed.map((x) => SOURCE_META[x]?.label ?? x).join(" + ") : "—"}
+                  {s.sourceStats?.length
+                    ? s.sourceStats
+                        .map((st) => `${SOURCE_META[st.source]?.label ?? st.source} ${st.skipped ? "skipped" : st.returned}`)
+                        .join(" · ")
+                    : s.sourcesUsed.length
+                      ? s.sourcesUsed.map((x) => SOURCE_META[x]?.label ?? x).join(" + ")
+                      : "no sources ran"}
                 </span>
                 {s.errors.length ? (
                   <span className="text-amber-400" title={s.errors.join("\n")}>

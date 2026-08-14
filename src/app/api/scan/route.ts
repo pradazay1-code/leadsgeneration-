@@ -5,7 +5,7 @@ import type { NicheId } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 // Places pagination across several territories can take a while.
-export const maxDuration = 300;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   let body: Record<string, unknown> = {};

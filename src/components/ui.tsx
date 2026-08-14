@@ -95,12 +95,11 @@ export const SOURCE_META: Record<SourceId, { label: string; className: string }>
   yelp: { label: "Yelp", className: "border-red-500/25 bg-red-500/10 text-red-300" },
   google_places: { label: "Google", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
   manual: { label: "Manual", className: "border-line-strong bg-surface-3 text-ink-3" },
-  demo: { label: "Sample", className: "border-amber-500/30 bg-amber-500/10 text-amber-300" },
 };
 
 /** Compact row of platform badges showing where a lead was seen. */
 export function SourceBadges({ sources, className }: { sources: SourceId[]; className?: string }) {
-  const visible = sources.filter((s) => s !== "demo" && s !== "manual");
+  const visible = sources.filter((s) => s !== "manual");
   if (!visible.length) return null;
   return (
     <span className={cn("inline-flex flex-wrap items-center gap-1", className)}>

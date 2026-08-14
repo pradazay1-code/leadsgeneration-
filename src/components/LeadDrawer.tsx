@@ -329,7 +329,6 @@ export function LeadDrawer({
               <Row label="Address">{lead.address ?? "—"}</Row>
               <Row label="Seen on">
                 <SourceBadges sources={lead.sources} />
-                {lead.source === "demo" ? " (fictional sample row)" : null}
               </Row>
               <Row label="Reviews">
                 {lead.reviewCount === null

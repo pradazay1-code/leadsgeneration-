@@ -114,9 +114,9 @@ export const googleProvider: SourceProvider = {
 
   statusDetail(): string {
     if (!this.isConfigured()) {
-      return "Set GOOGLE_PLACES_API_KEY to enable. Optional — the only source whose “no website” is definitive.";
+      return "RECOMMENDED — this is the only source with real coverage of US junk removal and real estate businesses. Set GOOGLE_PLACES_API_KEY and redeploy. Without it, expect very few results.";
     }
-    return "Connected. Definitive website data plus review counts and listing completeness.";
+    return "Connected. Comprehensive coverage plus definitive website data, review counts and listing completeness.";
   },
 
   supportsNiche(): boolean {
@@ -130,9 +130,10 @@ export const googleProvider: SourceProvider = {
     const out: SourceRecord[] = [];
     const seen = new Set<string>();
 
-    // Two focused queries per niche keeps the field-mask bill sane while the
-    // other (free) providers handle breadth.
-    const queries = getNiche(ctx.niche).queries.slice(0, 2);
+    // Google is the primary source, so run the fuller query set — the free
+    // providers can't be relied on for breadth. Capped at 4 to keep the
+    // field-mask bill predictable and stay inside the function time budget.
+    const queries = getNiche(ctx.niche).queries.slice(0, 4);
 
     for (const template of queries) {
       const query = template.replace("{area}", ctx.territory.area);
