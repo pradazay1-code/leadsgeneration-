@@ -202,7 +202,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     // run — Google and Yelp take a plain place name, so a Nominatim failure
     // must never block the whole scan.
     const needsCoords = providers.some(
-      (p) => p.id === "osm" && !benched.has("osm") && p.isConfigured(),
+      (p) => (p.id === "osm" || p.id === "geoapify") && !benched.has(p.id) && p.isConfigured(),
     );
     if (needsCoords && (terr.lat === null || terr.lng === null)) {
       const point = await geocodeArea(terr.area);
@@ -210,8 +210,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
         terr = { ...terr, lat: point.lat, lng: point.lng };
         await store.updateTerritory(terr.id, { lat: point.lat, lng: point.lng });
       } else {
-        tally.get("osm").errors.push(
-          `Couldn't geocode "${terr.area}" (OpenStreetMap's geocoder often blocks cloud hosts). Radius search skipped for this territory.`,
+        errors.push(
+          `Couldn't geocode "${terr.area}" — radius searches skipped there. Set GEOAPIFY_API_KEY for a geocoder that works from Vercel.`,
         );
       }
     }

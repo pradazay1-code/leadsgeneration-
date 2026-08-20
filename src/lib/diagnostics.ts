@@ -126,15 +126,15 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
   }
   checks.push({
     id: "geocoder",
-    label: "Geocoder (OpenStreetMap Nominatim)",
+    label: "Geocoder",
     status: geoOk ? "ok" : "warn",
     ms: geo.ms,
     detail: geoOk
-      ? `Resolved “${probeArea}” to coordinates.`
-      : "Couldn't resolve a town to coordinates. Nominatim commonly blocks cloud hosts like Vercel.",
+      ? `Resolved “${probeArea}” to coordinates via ${geo.value!.via === "geoapify" ? "Geoapify" : "OpenStreetMap Nominatim"}.`
+      : "Couldn't resolve a town to coordinates. OpenStreetMap's free geocoder (Nominatim) routinely blocks cloud hosts like Vercel.",
     fix: geoOk
       ? undefined
-      : "Only the OpenStreetMap radius search needs this. Google Places and Yelp search by place name, so they're unaffected.",
+      : "Set GEOAPIFY_API_KEY — Geoapify's geocoder is key-based and works from Vercel, which also re-enables the radius searches. Google Places and Yelp search by place name, so they're unaffected either way.",
   });
 
   let anySourceWorked = false;
@@ -150,19 +150,19 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
           provider.id === "google_places"
             ? "Strongly recommended — this is the source with real coverage of junk removal and real estate. Set GOOGLE_PLACES_API_KEY and redeploy."
             : provider.needsKey
-              ? `Set ${provider.id === "yelp" ? "YELP_API_KEY" : "the API key"} and redeploy to enable.`
+              ? `Set ${provider.id === "yelp" ? "YELP_API_KEY" : provider.id === "geoapify" ? "GEOAPIFY_API_KEY" : "the API key"} and redeploy to enable.`
               : undefined,
       });
       continue;
     }
 
-    if (provider.id === "osm" && !geoOk) {
+    if ((provider.id === "osm" || provider.id === "geoapify") && !geoOk) {
       checks.push({
         id: provider.id,
         label: provider.label,
         status: "warn",
         detail: "Enabled, but it needs coordinates and the geocoder failed, so it can't run.",
-        fix: "Use Google Places instead — it doesn't need geocoding.",
+        fix: "Set GEOAPIFY_API_KEY to fix the geocoder, or use Google Places, which doesn't need one.",
       });
       continue;
     }

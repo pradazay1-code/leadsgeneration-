@@ -1,6 +1,7 @@
 import "server-only";
 import type { ProviderStatus, SourceId } from "../types";
 import { bizdataProvider } from "./bizdata";
+import { geoapifyProvider } from "./geoapify";
 import { googleProvider } from "./google";
 import { osmProvider } from "./osm";
 import type { SourceProvider } from "./types";
@@ -10,6 +11,7 @@ import { yelpProvider } from "./yelp";
 export const ALL_PROVIDERS: SourceProvider[] = [
   googleProvider,
   yelpProvider,
+  geoapifyProvider,
   bizdataProvider,
   osmProvider,
 ];
@@ -21,7 +23,7 @@ export function configuredProviders(): SourceProvider[] {
 
 export function providerStatuses(): ProviderStatus[] {
   // Free sources first — they're the default path.
-  const order: SourceId[] = ["bizdata", "osm", "yelp", "google_places"];
+  const order: SourceId[] = ["google_places", "geoapify", "yelp", "bizdata", "osm"];
   return order.map((id) => {
     const p = ALL_PROVIDERS.find((x) => x.id === id)!;
     return {

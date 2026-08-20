@@ -27,9 +27,20 @@ only source with real coverage of these two niches, it needs no geocoder, and it
 | Source | Cost | Reality |
 |---|---|---|
 | **Google Places (New)** | Free monthly allowance, then paid | **Required for real results.** Comprehensive coverage of both niches. |
+| **Geoapify** | Free tier, 3,000 req/day | Fixes the **geocoder** (see below) and adds an OSM-derived place source. |
 | **Yelp Fusion** | 30-day trial (5,000 calls), then pay-per-call | Strong second source; best supplier of review counts. |
 | BizData | Free, no key | Real-estate only, thin OSM coverage. Supplement. |
 | OpenStreetMap Overpass | Free, no key | Few US service businesses are mapped. Supplement. |
+
+### Why a Geoapify key is worth setting
+
+Radius-based searching needs to turn "Norwood, MA" into coordinates. The free
+OpenStreetMap geocoder (Nominatim) routinely refuses requests from cloud hosts like
+Vercel, which silently disabled every radius search in production. `GEOAPIFY_API_KEY`
+gives you a key-based geocoder that works from Vercel, which re-enables the
+OpenStreetMap radius search as a side effect, and adds Geoapify Places as its own
+source. It does not replace Google Places — Geoapify's business data is also
+OpenStreetMap-derived, so its coverage of US service businesses has the same limits.
 
 ### Getting the Google Places key
 
@@ -51,7 +62,8 @@ stays inside the free allowance.
 2. **Add Postgres** — Vercel → Storage → Create Database → Postgres. `POSTGRES_URL` is
    injected automatically. **Without this, scanned leads vanish**: serverless requests
    hit different machines, so in-memory leads disappear the moment you reload.
-3. **Add `GOOGLE_PLACES_API_KEY`** (see above), and optionally `YELP_API_KEY`.
+3. **Add `GOOGLE_PLACES_API_KEY`** (see above), and optionally `GEOAPIFY_API_KEY` and
+   `YELP_API_KEY`.
 4. **Redeploy.**
 5. Open **Settings → System check**. It runs a live test query against every source and
    tells you what's still broken and how to fix it. Everything should read *Working*.

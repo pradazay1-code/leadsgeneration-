@@ -49,6 +49,7 @@ const SOURCE_LINK_LABELS: Partial<Record<string, string>> = {
   yelp: "Yelp listing",
   google_places: "Google Maps",
   bizdata: "OpenStreetMap entry",
+  geoapify: "OpenStreetMap entry",
   osm: "OpenStreetMap entry",
 };
 

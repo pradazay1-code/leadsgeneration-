@@ -8,7 +8,7 @@ import { countActive, type FilterState } from "@/lib/filterState";
 import { LEAD_STATUSES, type SourceId } from "@/lib/types";
 import { Button, Chip, Label, SOURCE_META, STATUS_META, inputClass } from "./ui";
 
-const FILTERABLE_SOURCES: SourceId[] = ["bizdata", "osm", "yelp", "google_places"];
+const FILTERABLE_SOURCES: SourceId[] = ["google_places", "geoapify", "yelp", "bizdata", "osm"];
 
 interface Facets {
   states: string[];

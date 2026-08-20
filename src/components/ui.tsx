@@ -92,6 +92,7 @@ export function TierBadge({ tier, className }: { tier: PresenceTier; className?:
 export const SOURCE_META: Record<SourceId, { label: string; className: string }> = {
   bizdata: { label: "BizData", className: "border-teal-500/30 bg-teal-500/10 text-teal-300" },
   osm: { label: "OSM", className: "border-lime-500/30 bg-lime-500/10 text-lime-300" },
+  geoapify: { label: "Geoapify", className: "border-violet-500/30 bg-violet-500/10 text-violet-300" },
   yelp: { label: "Yelp", className: "border-red-500/25 bg-red-500/10 text-red-300" },
   google_places: { label: "Google", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
   manual: { label: "Manual", className: "border-line-strong bg-surface-3 text-ink-3" },

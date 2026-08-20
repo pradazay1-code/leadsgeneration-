@@ -51,6 +51,7 @@ interface StatsResponse {
 const SOURCE_LABEL: Record<string, string> = {
   google_places: "Google",
   yelp: "Yelp",
+  geoapify: "Geoapify",
   bizdata: "BizData",
   osm: "OpenStreetMap",
   manual: "Manual",

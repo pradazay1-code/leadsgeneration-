@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 const SOURCE_NAMES: Record<string, string> = {
   bizdata: "BizData",
   osm: "OpenStreetMap",
+  geoapify: "Geoapify",
   yelp: "Yelp",
   google_places: "Google",
   manual: "Manual",

@@ -32,6 +32,7 @@ interface StatsResponse {
 const PROVIDER_ICONS: Record<string, LucideIcon> = {
   bizdata: Globe,
   osm: Map,
+  geoapify: Map,
   yelp: Star,
   google_places: KeyRound,
 };

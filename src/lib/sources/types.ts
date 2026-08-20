@@ -85,6 +85,7 @@ export const REVIEW_PLATFORMS: SourceId[] = ["yelp", "google_places"];
 export const SOURCE_PRIORITY: SourceId[] = [
   "google_places",
   "yelp",
+  "geoapify",
   "bizdata",
   "osm",
   "manual",
@@ -93,6 +94,7 @@ export const SOURCE_PRIORITY: SourceId[] = [
 export const SOURCE_LABELS: Record<SourceId, string> = {
   bizdata: "BizData",
   osm: "OpenStreetMap",
+  geoapify: "Geoapify",
   yelp: "Yelp",
   google_places: "Google Places",
   manual: "Manual",
