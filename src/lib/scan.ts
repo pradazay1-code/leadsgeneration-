@@ -7,6 +7,7 @@ import { SourceError, configuredProviders, type SourceRecord } from "./sources";
 import { normaliseHost, scoreBusiness } from "./scoring";
 import type {
   NicheId,
+  ScanCandidate,
   ScanRunSummary,
   SourceId,
   SourceScanStat,
@@ -152,6 +153,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       errors: [
         "No data source is available. Add GOOGLE_PLACES_API_KEY (recommended) or YELP_API_KEY in your Vercel environment variables, then redeploy.",
       ],
+      candidates: [],
+      rejectionCounts: {},
       noSourcesConfigured: true,
     };
     await store.recordScan(summary);
@@ -179,6 +182,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       sourcesUsed: [],
       sourceStats: [],
       errors: ["No enabled territories. Add a town on the Territories page first."],
+      candidates: [],
+      rejectionCounts: {},
       noSourcesConfigured: false,
     };
     await store.recordScan(summary);
@@ -193,7 +198,15 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   let ranOutOfTime = false;
   const batch = new Map<string, LeadUpsert>();
   const perTerritoryCount = new Map<string, number>();
+  const candidates: ScanCandidate[] = [];
+  const rejectionCounts: Record<string, number> = {};
   const now = new Date().toISOString();
+
+  const note = (c: ScanCandidate) => {
+    rejectionCounts[c.outcome] = (rejectionCounts[c.outcome] ?? 0) + 1;
+    // Keep a bounded readable sample rather than every row.
+    if (candidates.length < 120) candidates.push(c);
+  };
 
   outer: for (const territory of targets) {
     let terr = territory;
@@ -261,11 +274,37 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       }
 
       for (const merged of mergeRecords(records)) {
-        const { upsert } = toUpsert(merged, niche, checkedSources, terr.id, now);
-        if (!upsert || upsert.score < minScore) {
+        const { upsert, reason } = toUpsert(merged, niche, checkedSources, terr.id, now);
+
+        if (!upsert) {
           skipped += 1;
+          note({
+            name: merged.name,
+            city: merged.city,
+            sources: merged.sources,
+            score: 0,
+            outcome: reason ?? "Disqualified",
+          });
           continue;
         }
+        if (upsert.score < minScore) {
+          skipped += 1;
+          note({
+            name: merged.name,
+            city: merged.city,
+            sources: merged.sources,
+            score: upsert.score,
+            outcome: `Scored ${upsert.score}, below the ${minScore} cutoff — too established`,
+          });
+          continue;
+        }
+        note({
+          name: merged.name,
+          city: merged.city,
+          sources: merged.sources,
+          score: upsert.score,
+          outcome: "kept",
+        });
         const prev = batch.get(upsert.sourceId);
         if (!prev || upsert.score > prev.score) batch.set(upsert.sourceId, upsert);
         perTerritoryCount.set(terr.id, (perTerritoryCount.get(terr.id) ?? 0) + 1);
@@ -279,7 +318,20 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     );
   }
 
-  const { inserted, updated } = await store.upsertLeads([...batch.values()]);
+  const { inserted, updated, insertedIds } = await store.upsertLeads([...batch.values()]);
+
+  // Seed each new lead's timeline so the CRM shows how it arrived.
+  for (const id of insertedIds) {
+    await store.logActivity({
+      leadId: id,
+      type: "discovered",
+      body: "Found by the scanner",
+      outcome: null,
+      meta: {},
+      actor: "system",
+      durationMinutes: null,
+    });
+  }
 
   await Promise.all(
     targets.map((t) =>
@@ -313,6 +365,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     sourcesUsed: [...sourcesUsed],
     sourceStats: tally.toArray(),
     errors,
+    candidates,
+    rejectionCounts,
     noSourcesConfigured: false,
   };
 

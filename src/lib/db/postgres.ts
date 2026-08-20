@@ -8,6 +8,7 @@ import type {
   LeadStatus,
   NicheId,
   PresenceTier,
+  ScanCandidate,
   ScanRunSummary,
   ScoreSignal,
   SourceScanStat,
@@ -17,7 +18,15 @@ import type {
 } from "../types";
 import { LEAD_STATUSES } from "../types";
 import { TIER_ORDER } from "../scoring";
-import type { Facets, LeadPage, LeadPatch, LeadUpsert, Store, UpsertResult } from "./store";
+import type {
+  Facets, LeadPage, LeadPatch, LeadUpsert, Store, TaskFilters, TaskInput, UpsertResult,
+} from "./store";
+import type {
+  Activity, ActivityInput, DashboardSummary, MessageTemplate, Pipeline, PipelineStage,
+  PipelineWithStages, SavedView, Sequence, SequenceEnrollment, SequenceStep,
+  SequenceWithSteps, Task, TaskWithLead,
+} from "../crm/types";
+import * as crm from "./postgres-crm";
 
 export function connectionString(): string | null {
   return (
@@ -95,6 +104,14 @@ function toLead(r: Row): Lead {
     signals: (r.signals ?? []) as ScoreSignal[],
     status: r.status as LeadStatus,
     notes: r.notes ?? "",
+    pipelineId: r.pipeline_id ? String(r.pipeline_id) : null,
+    stageId: r.stage_id ? String(r.stage_id) : null,
+    valueCents: Number(r.value_cents ?? 0),
+    tags: (r.tags ?? []) as string[],
+    customFields: (r.custom_fields ?? {}) as Record<string, string>,
+    nextActionAt: r.next_action_at ? new Date(r.next_action_at).toISOString() : null,
+    lastContactedAt: r.last_contacted_at ? new Date(r.last_contacted_at).toISOString() : null,
+    doNotContact: Boolean(r.do_not_contact),
     discoveredAt: new Date(r.discovered_at).toISOString(),
     lastSeenAt: new Date(r.last_seen_at).toISOString(),
     territoryId: r.territory_id ? String(r.territory_id) : null,
@@ -214,6 +231,8 @@ export class PostgresStore implements Store {
     await sql`ALTER TABLE territories ADD COLUMN IF NOT EXISTS lng double precision`;
     await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS sources_used jsonb NOT NULL DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS source_stats jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS candidates jsonb NOT NULL DEFAULT '[]'::jsonb`;
+    await sql`ALTER TABLE scan_runs ADD COLUMN IF NOT EXISTS rejection_counts jsonb NOT NULL DEFAULT '{}'::jsonb`;
 
     await sql`CREATE INDEX IF NOT EXISTS leads_score_idx ON leads (score DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_discovered_idx ON leads (discovered_at DESC)`;
@@ -221,10 +240,8 @@ export class PostgresStore implements Store {
     await sql`CREATE INDEX IF NOT EXISTS leads_status_idx ON leads (status)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_tier_idx ON leads (tier)`;
     await sql`CREATE INDEX IF NOT EXISTS leads_sources_idx ON leads USING gin (sources)`;
-  }
 
-  async isDemo(): Promise<boolean> {
-    return false;
+    await crm.migrateCrm(sql);
   }
 
   private whereClause(f: LeadFilters) {
@@ -236,6 +253,14 @@ export class PostgresStore implements Store {
     if (f.statuses?.length) conds.push(sql`status = ANY(${f.statuses})`);
     if (f.states?.length) conds.push(sql`state = ANY(${f.states})`);
     if (f.cities?.length) conds.push(sql`city = ANY(${f.cities})`);
+    if (f.stageIds?.length) conds.push(sql`stage_id = ANY(${f.stageIds}::uuid[])`);
+    if (f.tags?.length) conds.push(sql`tags ?| ${sql.array(f.tags)}`);
+    if (f.dueOnly) {
+      conds.push(sql`EXISTS (SELECT 1 FROM tasks t WHERE t.lead_id = leads.id AND t.completed_at IS NULL AND t.due_at IS NOT NULL AND t.due_at <= now())`);
+    }
+    if (f.untouchedOnly) {
+      conds.push(sql`NOT EXISTS (SELECT 1 FROM activities a WHERE a.lead_id = leads.id AND a.type IN ('call','email','sms','meeting'))`);
+    }
     if (f.sources?.length) {
       // jsonb "contains any of these keys" — sources is a JSON array of strings.
       conds.push(sql`sources ?| ${sql.array(f.sources)}`);
@@ -310,13 +335,24 @@ export class PostgresStore implements Store {
 
   async upsertLeads(incoming: LeadUpsert[]): Promise<UpsertResult> {
     await this.init();
-    if (!incoming.length) return { inserted: 0, updated: 0 };
+    if (!incoming.length) return { inserted: 0, updated: 0, insertedIds: [] };
     const sql = client();
 
     let inserted = 0;
     let updated = 0;
+    const insertedIds: string[] = [];
+
+    // Every new lead lands in its niche's pipeline at the first stage, so the
+    // kanban board is populated without the user assigning anything by hand.
+    const pipelines = await crm.listPipelines(sql);
+    const entryFor = (niche: string) => {
+      const p = pipelines.find((x) => x.niche === niche) ?? pipelines.find((x) => x.isDefault) ?? pipelines[0];
+      const stage = p?.stages.find((s2) => !s2.isWon && !s2.isLost) ?? p?.stages[0];
+      return { pipelineId: p?.id ?? null, stageId: stage?.id ?? null };
+    };
 
     for (const l of incoming) {
+      const entry = entryFor(l.niche);
       // `xmax = 0` is the standard Postgres trick for telling an INSERT apart
       // from an ON CONFLICT UPDATE in the RETURNING clause.
       const rows = await sql<Row[]>`
@@ -324,14 +360,16 @@ export class PostgresStore implements Store {
           source_id, source, sources, source_refs, name, niche, phone, website,
           website_host, address, city, state, postal_code, lat, lng, maps_url,
           rating, review_count, photo_count, has_hours, business_status,
-          categories, score, tier, signals, last_seen_at, territory_id
+          categories, score, tier, signals, last_seen_at, territory_id,
+          pipeline_id, stage_id
         ) VALUES (
           ${l.sourceId}, ${l.source}, ${jsonb(l.sources)}, ${jsonb(l.sourceRefs)},
           ${l.name}, ${l.niche}, ${l.phone}, ${l.website}, ${l.websiteHost},
           ${l.address}, ${l.city}, ${l.state}, ${l.postalCode}, ${l.lat}, ${l.lng},
           ${l.mapsUrl}, ${l.rating}, ${l.reviewCount}, ${l.photoCount},
           ${l.hasHours}, ${l.businessStatus}, ${jsonb(l.categories)}, ${l.score},
-          ${l.tier}, ${jsonb(l.signals)}, ${l.lastSeenAt}, ${l.territoryId}
+          ${l.tier}, ${jsonb(l.signals)}, ${l.lastSeenAt}, ${l.territoryId},
+          ${entry.pipelineId}, ${entry.stageId}
         )
         ON CONFLICT (source_id) DO UPDATE SET
           source = EXCLUDED.source,
@@ -358,25 +396,64 @@ export class PostgresStore implements Store {
           tier = EXCLUDED.tier,
           signals = EXCLUDED.signals,
           last_seen_at = EXCLUDED.last_seen_at
-        RETURNING (xmax = 0) AS is_insert`;
+        RETURNING id, (xmax = 0) AS is_insert`;
 
-      if (rows[0]?.is_insert) inserted += 1;
-      else updated += 1;
+      if (rows[0]?.is_insert) {
+        inserted += 1;
+        insertedIds.push(String(rows[0].id));
+      } else updated += 1;
     }
 
-    return { inserted, updated };
+    return { inserted, updated, insertedIds };
   }
 
   async patchLead(id: string, patch: LeadPatch): Promise<Lead | null> {
     await this.init();
     const sql = client();
+
+    // Capture the prior stage so a move can be written to the timeline.
+    const before = "stageId" in patch ? await this.getLead(id) : null;
+
     const rows = await sql<Row[]>`
       UPDATE leads SET
-        status = COALESCE(${patch.status ?? null}, status),
-        notes  = COALESCE(${patch.notes ?? null}, notes)
+        status            = COALESCE(${patch.status ?? null}, status),
+        notes             = COALESCE(${patch.notes ?? null}, notes),
+        stage_id          = CASE WHEN ${"stageId" in patch} THEN ${patch.stageId ?? null}::uuid ELSE stage_id END,
+        pipeline_id       = CASE WHEN ${"pipelineId" in patch} THEN ${patch.pipelineId ?? null}::uuid ELSE pipeline_id END,
+        value_cents       = COALESCE(${patch.valueCents ?? null}, value_cents),
+        tags              = COALESCE(${patch.tags ? jsonb(patch.tags) : null}, tags),
+        custom_fields     = COALESCE(${patch.customFields ? jsonb(patch.customFields) : null}, custom_fields),
+        next_action_at    = CASE WHEN ${"nextActionAt" in patch} THEN ${patch.nextActionAt ?? null} ELSE next_action_at END,
+        last_contacted_at = CASE WHEN ${"lastContactedAt" in patch} THEN ${patch.lastContactedAt ?? null} ELSE last_contacted_at END,
+        do_not_contact    = COALESCE(${patch.doNotContact ?? null}, do_not_contact)
       WHERE id = ${id}
       RETURNING *`;
-    return rows[0] ? toLead(rows[0]) : null;
+    if (!rows[0]) return null;
+    const lead = toLead(rows[0]);
+
+    if (before && before.stageId !== lead.stageId) {
+      const stages = (await crm.listPipelines(sql)).flatMap((p) => p.stages);
+      const from = stages.find((s2) => s2.id === before.stageId)?.name ?? "unassigned";
+      const to = stages.find((s2) => s2.id === lead.stageId)?.name ?? "unassigned";
+      await crm.logActivity(sql, {
+        leadId: id,
+        type: "stage_change",
+        body: `${from} → ${to}`,
+        outcome: null,
+        meta: { from, to },
+        actor: "me",
+        durationMinutes: null,
+      });
+    }
+    return lead;
+  }
+
+  async bulkPatchLeads(ids: string[], patch: LeadPatch): Promise<number> {
+    let n = 0;
+    for (const id of ids) {
+      if (await this.patchLead(id, patch)) n += 1;
+    }
+    return n;
   }
 
   async deleteLead(id: string): Promise<boolean> {
@@ -431,11 +508,16 @@ export class PostgresStore implements Store {
   async facets(): Promise<Facets> {
     await this.init();
     const sql = client();
-    const [states, cities] = await Promise.all([
+    const [states, cities, tags] = await Promise.all([
       sql<Row[]>`SELECT DISTINCT state FROM leads WHERE state IS NOT NULL AND state <> '' ORDER BY state`,
       sql<Row[]>`SELECT DISTINCT city FROM leads WHERE city IS NOT NULL AND city <> '' ORDER BY city`,
+      sql<Row[]>`SELECT DISTINCT jsonb_array_elements_text(tags) AS tag FROM leads ORDER BY tag`,
     ]);
-    return { states: states.map((r) => r.state), cities: cities.map((r) => r.city) };
+    return {
+      states: states.map((r) => r.state),
+      cities: cities.map((r) => r.city),
+      tags: tags.map((r) => r.tag),
+    };
   }
 
   async listTerritories(): Promise<Territory[]> {
@@ -494,11 +576,13 @@ export class PostgresStore implements Store {
     await sql`
       INSERT INTO scan_runs (
         started_at, finished_at, territories_scanned, places_inspected,
-        new_leads, updated_leads, skipped, sources_used, source_stats, errors, demo_mode
+        new_leads, updated_leads, skipped, sources_used, source_stats, errors, demo_mode,
+        candidates, rejection_counts
       ) VALUES (
         ${s.startedAt}, ${s.finishedAt}, ${s.territoriesScanned}, ${s.placesInspected},
         ${s.newLeads}, ${s.updatedLeads}, ${s.skipped}, ${jsonb(s.sourcesUsed)},
-        ${jsonb(s.sourceStats)}, ${jsonb(s.errors)}, ${s.noSourcesConfigured}
+        ${jsonb(s.sourceStats)}, ${jsonb(s.errors)}, ${s.noSourcesConfigured},
+        ${jsonb(s.candidates)}, ${jsonb(s.rejectionCounts)}
       )`;
   }
 
@@ -516,6 +600,8 @@ export class PostgresStore implements Store {
       skipped: Number(r.skipped),
       sourcesUsed: (r.sources_used ?? []) as SourceId[],
       sourceStats: (r.source_stats ?? []) as SourceScanStat[],
+      candidates: (r.candidates ?? []) as ScanCandidate[],
+      rejectionCounts: (r.rejection_counts ?? {}) as Record<string, number>,
       errors: (r.errors ?? []) as string[],
       noSourcesConfigured: Boolean(r.demo_mode),
     }));
@@ -535,5 +621,148 @@ export class PostgresStore implements Store {
       INSERT INTO app_prefs (key, value, updated_at)
       VALUES (${key}, ${jsonb(value)}, now())
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  }
+
+  /* ------------------------------------------------------------- CRM --- */
+
+  async listPipelines(): Promise<PipelineWithStages[]> {
+    await this.init();
+    return crm.listPipelines(client());
+  }
+  async createPipeline(name: string, niche: Pipeline["niche"]): Promise<PipelineWithStages> {
+    await this.init();
+    return crm.createPipeline(client(), name, niche);
+  }
+  async updatePipeline(id: string, patch: Partial<Pipeline>): Promise<Pipeline | null> {
+    await this.init();
+    return crm.updatePipeline(client(), id, patch);
+  }
+  async deletePipeline(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deletePipeline(client(), id);
+  }
+  async createStage(pipelineId: string, name: string, position: number): Promise<PipelineStage> {
+    await this.init();
+    return crm.createStage(client(), pipelineId, name, position);
+  }
+  async updateStage(id: string, patch: Partial<PipelineStage>): Promise<PipelineStage | null> {
+    await this.init();
+    return crm.updateStage(client(), id, patch);
+  }
+  async deleteStage(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteStage(client(), id);
+  }
+  async defaultPipelineFor(niche: string): Promise<PipelineWithStages | null> {
+    await this.init();
+    return crm.defaultPipelineFor(client(), niche);
+  }
+
+  async listActivities(leadId: string, limit?: number): Promise<Activity[]> {
+    await this.init();
+    return crm.listActivities(client(), leadId, limit);
+  }
+  async logActivity(input: ActivityInput): Promise<Activity> {
+    await this.init();
+    return crm.logActivity(client(), input);
+  }
+  async deleteActivity(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteActivity(client(), id);
+  }
+
+  async listTasks(filters: TaskFilters): Promise<TaskWithLead[]> {
+    await this.init();
+    return crm.listTasks(client(), filters);
+  }
+  async createTask(input: TaskInput): Promise<Task> {
+    await this.init();
+    return crm.createTask(client(), input);
+  }
+  async updateTask(id: string, patch: Partial<Task>): Promise<Task | null> {
+    await this.init();
+    return crm.updateTask(client(), id, patch);
+  }
+  async deleteTask(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteTask(client(), id);
+  }
+
+  async listSequences(): Promise<SequenceWithSteps[]> {
+    await this.init();
+    return crm.listSequences(client());
+  }
+  async createSequence(seq: Omit<Sequence, "id" | "createdAt">): Promise<Sequence> {
+    await this.init();
+    return crm.createSequence(client(), seq);
+  }
+  async updateSequence(id: string, patch: Partial<Sequence>): Promise<Sequence | null> {
+    await this.init();
+    return crm.updateSequence(client(), id, patch);
+  }
+  async deleteSequence(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteSequence(client(), id);
+  }
+  async replaceSequenceSteps(
+    sequenceId: string,
+    steps: Array<Omit<SequenceStep, "id" | "sequenceId">>,
+  ): Promise<SequenceStep[]> {
+    await this.init();
+    return crm.replaceSequenceSteps(client(), sequenceId, steps);
+  }
+  async enrollLead(sequenceId: string, leadId: string): Promise<SequenceEnrollment> {
+    await this.init();
+    return crm.enrollLead(client(), sequenceId, leadId);
+  }
+  async listEnrollments(leadId?: string): Promise<SequenceEnrollment[]> {
+    await this.init();
+    return crm.listEnrollments(client(), leadId);
+  }
+  async updateEnrollment(
+    id: string,
+    patch: Partial<SequenceEnrollment>,
+  ): Promise<SequenceEnrollment | null> {
+    await this.init();
+    return crm.updateEnrollment(client(), id, patch);
+  }
+  async dueEnrollments(at: string): Promise<SequenceEnrollment[]> {
+    await this.init();
+    return crm.dueEnrollments(client(), at);
+  }
+
+  async listTemplates(): Promise<MessageTemplate[]> {
+    await this.init();
+    return crm.listTemplates(client());
+  }
+  async createTemplate(t: Omit<MessageTemplate, "id" | "createdAt">): Promise<MessageTemplate> {
+    await this.init();
+    return crm.createTemplate(client(), t);
+  }
+  async updateTemplate(id: string, patch: Partial<MessageTemplate>): Promise<MessageTemplate | null> {
+    await this.init();
+    return crm.updateTemplate(client(), id, patch);
+  }
+  async deleteTemplate(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteTemplate(client(), id);
+  }
+
+  async listSavedViews(): Promise<SavedView[]> {
+    await this.init();
+    return crm.listSavedViews(client());
+  }
+  async createSavedView(name: string, filters: Record<string, unknown>): Promise<SavedView> {
+    await this.init();
+    return crm.createSavedView(client(), name, filters);
+  }
+  async deleteSavedView(id: string): Promise<boolean> {
+    await this.init();
+    return crm.deleteSavedView(client(), id);
+  }
+
+  async dashboard(): Promise<DashboardSummary> {
+    await this.init();
+    return crm.dashboard(client());
   }
 }

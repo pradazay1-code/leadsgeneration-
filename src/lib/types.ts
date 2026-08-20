@@ -111,6 +111,25 @@ export interface Lead {
 
   status: LeadStatus;
   notes: string;
+
+  /* ---- CRM fields ---- */
+  /** Pipeline this lead sits in; null until assigned (defaults on first scan). */
+  pipelineId: string | null;
+  /** Current stage within that pipeline — drives the kanban board. */
+  stageId: string | null;
+  /** Deal size in cents, so money math never hits float rounding. */
+  valueCents: number;
+  /** Free-form labels for segmenting ("hot", "referral", "spanish-speaking"). */
+  tags: string[];
+  /** User-defined fields, keyed by field name. */
+  customFields: Record<string, string>;
+  /** When the next touch is due — mirrors the soonest open task. */
+  nextActionAt: string | null;
+  /** Last outbound contact of any channel. Drives the "going cold" metric. */
+  lastContactedAt: string | null;
+  /** Suppress all outreach (DNC request, competitor, etc.). */
+  doNotContact: boolean;
+
   /** ISO timestamp. When this lead first entered the database. */
   discoveredAt: string;
   /** ISO timestamp. Last time a scan re-confirmed / refreshed this row. */
@@ -156,6 +175,16 @@ export interface SourceScanStat {
   skipReason?: string;
 }
 
+/** One candidate the scan considered, and what happened to it. */
+export interface ScanCandidate {
+  name: string;
+  city: string | null;
+  sources: SourceId[];
+  score: number;
+  /** "kept" or the reason it was dropped. */
+  outcome: string;
+}
+
 export interface ScanRunSummary {
   startedAt: string;
   finishedAt: string;
@@ -170,12 +199,27 @@ export interface ScanRunSummary {
   /** Full per-source breakdown, so a silent zero is always explainable. */
   sourceStats: SourceScanStat[];
   errors: string[];
+  /**
+   * A readable sample of what the scan actually saw and decided, so "it found
+   * nothing" is always traceable to specific businesses and reasons.
+   */
+  candidates: ScanCandidate[];
+  /** Counts by rejection reason across the whole run. */
+  rejectionCounts: Record<string, number>;
   /** True when no source could run at all. */
   noSourcesConfigured: boolean;
 }
 
 export interface LeadFilters {
   q?: string;
+  /** Leads sitting in these pipeline stages. */
+  stageIds?: string[];
+  /** Leads carrying ANY of these tags. */
+  tags?: string[];
+  /** true = only leads with an overdue or due-today task. */
+  dueOnly?: boolean;
+  /** true = only leads nobody has contacted yet. */
+  untouchedOnly?: boolean;
   niches?: NicheId[];
   tiers?: PresenceTier[];
   statuses?: LeadStatus[];

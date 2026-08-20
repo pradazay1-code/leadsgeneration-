@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { LEAD_STATUSES, type LeadStatus } from "@/lib/types";
+import type { LeadPatch } from "@/lib/db/store";
 
 export const dynamic = "force-dynamic";
 
@@ -11,14 +12,28 @@ interface Ctx {
 export async function PATCH(request: Request, { params }: Ctx) {
   const { id } = await params;
 
-  let body: { status?: unknown; notes?: unknown };
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const patch: { status?: LeadStatus; notes?: string } = {};
+  const patch: LeadPatch = {};
+
+  if (typeof body.stageId === "string" || body.stageId === null) patch.stageId = body.stageId as string | null;
+  if (typeof body.pipelineId === "string" || body.pipelineId === null) patch.pipelineId = body.pipelineId as string | null;
+  if (typeof body.valueCents === "number" && Number.isFinite(body.valueCents)) {
+    patch.valueCents = Math.max(0, Math.round(body.valueCents));
+  }
+  if (Array.isArray(body.tags)) {
+    patch.tags = body.tags
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim().slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 20);
+  }
+  if (typeof body.doNotContact === "boolean") patch.doNotContact = body.doNotContact;
 
   if (body.status !== undefined) {
     if (typeof body.status !== "string" || !(LEAD_STATUSES as string[]).includes(body.status)) {

@@ -7,16 +7,11 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const store = await getStore();
-    const [stats, scans, demo] = await Promise.all([
-      store.stats(),
-      store.recentScans(5),
-      store.isDemo(),
-    ]);
+    const [stats, scans] = await Promise.all([store.stats(), store.recentScans(5)]);
 
     return NextResponse.json({
       stats,
       recentScans: scans,
-      demoData: demo,
       providers: providerStatuses(),
       storeKind: store.kind,
     });
