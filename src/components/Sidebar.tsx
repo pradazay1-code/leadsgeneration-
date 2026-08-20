@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Map, Radar, Settings, Target } from "lucide-react";
+import { KanbanSquare, ListTodo, Map, Radar, Settings, Sun, Target } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const NAV = [
+  { href: "/dashboard", label: "Today", icon: Sun, exact: false },
   { href: "/", label: "Leads", icon: Target, exact: true },
+  { href: "/pipeline", label: "Pipeline", icon: KanbanSquare, exact: false },
+  { href: "/tasks", label: "Tasks", icon: ListTodo, exact: false },
   { href: "/territories", label: "Territories", icon: Map, exact: false },
   { href: "/settings", label: "Settings", icon: Settings, exact: false },
 ];

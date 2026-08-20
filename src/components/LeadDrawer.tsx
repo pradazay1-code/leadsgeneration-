@@ -17,6 +17,7 @@ import { TIER_META } from "@/lib/scoring";
 import { formatDate, relativeTime, telHref } from "@/lib/format";
 import { LEAD_STATUSES, type Lead, type LeadStatus } from "@/lib/types";
 import { Button, STATUS_META, ScoreBar, SourceBadges, TierBadge, inputClass } from "./ui";
+import { LeadActivityPanel } from "./LeadActivityPanel";
 
 /** Build a first-line opener from whichever gap scored highest. */
 function suggestedOpener(lead: Lead): string {
@@ -101,6 +102,7 @@ export function LeadDrawer({
   onPatch: (id: string, patch: { status?: LeadStatus; notes?: string }) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
 }) {
+  const [tab, setTab] = useState<"activity" | "details">("activity");
   const [notes, setNotes] = useState(lead.notes);
   const [savingNotes, setSavingNotes] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -174,7 +176,32 @@ export function LeadDrawer({
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        {/* Tabs */}
+        <div className="flex gap-1 border-b border-line px-5 pt-3">
+          {(["activity", "details"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setTab(t)}
+              className={cn(
+                "rounded-t-lg px-3 py-2 text-[13px] font-medium capitalize transition-colors focus-ring",
+                tab === t
+                  ? "border-b-2 border-brand text-ink"
+                  : "border-b-2 border-transparent text-ink-3 hover:text-ink-2",
+              )}
+            >
+              {t === "activity" ? "Activity" : "Lead details"}
+            </button>
+          ))}
+        </div>
+
+        {tab === "activity" ? (
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            <LeadActivityPanel leadId={lead.id} />
+          </div>
+        ) : null}
+
+        <div className={cn("flex-1 overflow-y-auto", tab === "details" ? "" : "hidden")}>
           {/* Score */}
           <section className="border-b border-line px-5 py-4">
             <div className="mb-3 flex items-baseline justify-between">
