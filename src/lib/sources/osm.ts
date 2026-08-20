@@ -93,6 +93,7 @@ export function elementToRecord(
 
   const website = tag(tags, "website", "contact:website", "contact:facebook", "url");
   const phone = tag(tags, "phone", "contact:phone", "contact:mobile");
+  const email = tag(tags, "email", "contact:email");
   const city = tag(tags, "addr:city");
   const state = tag(tags, "addr:state") ?? (fallbackState || null);
   const postalCode = tag(tags, "addr:postcode");
@@ -110,6 +111,7 @@ export function elementToRecord(
     profileUrl: `https://www.openstreetmap.org/${el.type}/${el.id}`,
     name,
     phone,
+    email,
     website,
     address,
     city,

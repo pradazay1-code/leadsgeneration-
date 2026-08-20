@@ -75,6 +75,7 @@ interface GeoapifyProperties {
   categories?: string[];
   website?: string;
   phone?: string;
+  email?: string;
   opening_hours?: string;
   datasource?: {
     sourcename?: string;
@@ -108,6 +109,7 @@ function toRecord(props: GeoapifyProperties, fallbackState: string): SourceRecor
     rawTag(raw, "website", "contact:website", "url", "contact:facebook");
   const phone =
     props.phone?.trim() || rawTag(raw, "phone", "contact:phone", "contact:mobile");
+  const email = props.email?.trim() || rawTag(raw, "email", "contact:email");
   const hours = props.opening_hours?.trim() || rawTag(raw, "opening_hours");
 
   const street = [props.housenumber, props.street].filter(Boolean).join(" ");
@@ -125,6 +127,7 @@ function toRecord(props: GeoapifyProperties, fallbackState: string): SourceRecor
       osmId && osmType ? `https://www.openstreetmap.org/${osmType}/${osmId}` : null,
     name,
     phone,
+    email,
     website,
     address,
     city: props.city?.trim() || null,

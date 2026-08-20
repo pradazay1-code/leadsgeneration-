@@ -127,6 +127,7 @@ export const bizdataProvider: SourceProvider = {
         profileUrl: /^\d+$/.test(nativeId) ? `https://www.openstreetmap.org/node/${nativeId}` : null,
         name: b.name,
         phone: b.phone?.trim() || null,
+        email: b.email?.trim() || null,
         website: b.website?.trim() || null,
         address: b.address ?? null,
         city,

@@ -78,6 +78,7 @@ export function parseLeadFilters(params: URLSearchParams): LeadFilters {
     maxReviews: num(params, "maxReviews"),
     hasWebsite: bool(params, "hasWebsite"),
     hasPhone: bool(params, "hasPhone"),
+    hasEmail: bool(params, "hasEmail"),
     discoveredWithinDays: num(params, "withinDays"),
     sort,
     limit: limit === undefined ? 200 : Math.min(Math.max(limit, 1), 500),
@@ -100,6 +101,7 @@ export function filtersToParams(f: LeadFilters): URLSearchParams {
   if (typeof f.maxReviews === "number") p.set("maxReviews", String(f.maxReviews));
   if (typeof f.hasWebsite === "boolean") p.set("hasWebsite", String(f.hasWebsite));
   if (typeof f.hasPhone === "boolean") p.set("hasPhone", String(f.hasPhone));
+  if (typeof f.hasEmail === "boolean") p.set("hasEmail", String(f.hasEmail));
   if (typeof f.discoveredWithinDays === "number") p.set("withinDays", String(f.discoveredWithinDays));
   if (f.sort) p.set("sort", f.sort);
   return p;

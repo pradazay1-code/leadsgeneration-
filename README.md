@@ -86,6 +86,26 @@ skipped · OpenStreetMap: 0`), so a zero is never silent. Common causes:
 - **Time budget reached** — scans stop cleanly at ~45s (Vercel's function ceiling) and
   save what they found. Run again, or split big territories into individual towns.
 
+## Outreach sequences
+
+Multi-touch cadences run themselves. Two ship by default: a phone-led 5-touch for
+owner-operators, and a fast-track for leads with no website at all.
+
+- **Steps become tasks by default.** Call steps always do. Email and SMS steps do too,
+  with the message already written, unless you connect a sender.
+- **Connect a sender to automate.** `RESEND_API_KEY` + `OUTREACH_FROM_EMAIL` for email,
+  Twilio credentials for SMS. Steps then send themselves and log to the timeline.
+- **Merge fields** are filled per lead. `{{gap}}` is the one that matters — it writes out
+  that specific business's biggest weakness in plain English ("you don't have a website
+  listed on Google", "you've only got 2 reviews so far"), which is why these read as
+  observations rather than spam.
+- **Guardrails, always on:** no sends to do-not-contact leads, cadences stop the moment a
+  lead is marked won/lost/ignored, nothing goes out on Sundays or outside 8am–7pm local,
+  and a per-run cap (`OUTREACH_DAILY_CAP`, default 50) means a misconfigured sequence
+  can't blast a whole territory. Failed sends defer and retry rather than skipping a touch.
+- Steps fire via cron three times a day, so anything deferred outside business hours gets
+  picked up. You can also hit **Run due steps now** on the Sequences page.
+
 ## What you get
 
 - **Leads workspace** — one row per business, merged across sources, with "Seen on"

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getStore } from "@/lib/db";
 import { providerStatuses } from "@/lib/sources";
+import { senderStatuses } from "@/lib/outreach/providers";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,7 @@ export async function GET() {
       stats,
       recentScans: scans,
       providers: providerStatuses(),
+      senders: senderStatuses(),
       storeKind: store.kind,
     });
   } catch (err) {

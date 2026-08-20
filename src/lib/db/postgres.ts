@@ -84,6 +84,7 @@ function toLead(r: Row): Lead {
     name: r.name,
     niche: r.niche as NicheId,
     phone: r.phone,
+    email: r.email,
     website: r.website,
     websiteHost: r.website_host,
     address: r.address,
@@ -172,6 +173,7 @@ export class PostgresStore implements Store {
         name            text        NOT NULL,
         niche           text        NOT NULL,
         phone           text,
+        email           text,
         website         text,
         website_host    text,
         address         text,
@@ -221,6 +223,7 @@ export class PostgresStore implements Store {
       )`;
 
     // Idempotent upgrades for databases created by earlier versions.
+    await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS email text`;
     await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '[]'::jsonb`;
     await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_refs jsonb NOT NULL DEFAULT '{}'::jsonb`;
     await sql`ALTER TABLE leads ALTER COLUMN review_count DROP NOT NULL`;
@@ -274,6 +277,8 @@ export class PostgresStore implements Store {
     if (f.hasWebsite === false) conds.push(sql`(website IS NULL OR website = '')`);
     if (f.hasPhone === true) conds.push(sql`phone IS NOT NULL AND phone <> ''`);
     if (f.hasPhone === false) conds.push(sql`(phone IS NULL OR phone = '')`);
+    if (f.hasEmail === true) conds.push(sql`email IS NOT NULL AND email <> ''`);
+    if (f.hasEmail === false) conds.push(sql`(email IS NULL OR email = '')`);
     if (typeof f.discoveredWithinDays === "number") {
       conds.push(
         sql`discovered_at >= now() - (${f.discoveredWithinDays} || ' days')::interval`,
@@ -357,14 +362,14 @@ export class PostgresStore implements Store {
       // from an ON CONFLICT UPDATE in the RETURNING clause.
       const rows = await sql<Row[]>`
         INSERT INTO leads (
-          source_id, source, sources, source_refs, name, niche, phone, website,
+          source_id, source, sources, source_refs, name, niche, phone, email, website,
           website_host, address, city, state, postal_code, lat, lng, maps_url,
           rating, review_count, photo_count, has_hours, business_status,
           categories, score, tier, signals, last_seen_at, territory_id,
           pipeline_id, stage_id
         ) VALUES (
           ${l.sourceId}, ${l.source}, ${jsonb(l.sources)}, ${jsonb(l.sourceRefs)},
-          ${l.name}, ${l.niche}, ${l.phone}, ${l.website}, ${l.websiteHost},
+          ${l.name}, ${l.niche}, ${l.phone}, ${l.email}, ${l.website}, ${l.websiteHost},
           ${l.address}, ${l.city}, ${l.state}, ${l.postalCode}, ${l.lat}, ${l.lng},
           ${l.mapsUrl}, ${l.rating}, ${l.reviewCount}, ${l.photoCount},
           ${l.hasHours}, ${l.businessStatus}, ${jsonb(l.categories)}, ${l.score},
@@ -377,6 +382,7 @@ export class PostgresStore implements Store {
           source_refs = EXCLUDED.source_refs,
           name = EXCLUDED.name,
           phone = EXCLUDED.phone,
+          email = EXCLUDED.email,
           website = EXCLUDED.website,
           website_host = EXCLUDED.website_host,
           address = EXCLUDED.address,

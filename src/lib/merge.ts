@@ -15,6 +15,7 @@ export interface MergedBusiness {
 
   name: string;
   phone: string | null;
+  email: string | null;
   website: string | null;
   address: string | null;
   city: string | null;
@@ -137,6 +138,7 @@ export function mergeRecords(records: SourceRecord[]): MergedBusiness[] {
       sourceRefs,
       name: group[0].name,
       phone: pick(group, (r) => r.phone),
+      email: pick(group, (r) => r.email),
       website: pick(group, (r) => r.website),
       address: pick(group, (r) => r.address),
       city: pick(group, (r) => r.city),

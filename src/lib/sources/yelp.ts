@@ -128,6 +128,8 @@ export const yelpProvider: SourceProvider = {
           profileUrl: cleanUrl(b.url),
           name: b.name,
           phone: b.display_phone?.trim() || b.phone?.trim() || null,
+          // Yelp's API never exposes business emails.
+          email: null,
           // Yelp's API does not expose business websites.
           website: null,
           address: b.location?.display_address?.join(", ") ?? b.location?.address1 ?? null,

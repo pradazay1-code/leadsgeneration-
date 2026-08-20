@@ -84,6 +84,8 @@ function toRecord(p: PlacesResult): SourceRecord | null {
     profileUrl: p.googleMapsUri ?? null,
     name: p.displayName.text,
     phone: p.nationalPhoneNumber ?? null,
+    // Google Places does not return business email addresses.
+    email: null,
     website: p.websiteUri ?? null,
     address: p.formattedAddress ?? null,
     city:

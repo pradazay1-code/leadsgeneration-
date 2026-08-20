@@ -20,6 +20,8 @@ import {
   type Activity,
   type ActivityType,
   type CallOutcome,
+  type SequenceEnrollment,
+  type SequenceWithSteps,
   type TaskWithLead,
 } from "@/lib/crm/types";
 import { Button, Spinner, inputClass } from "./ui";
@@ -189,6 +191,78 @@ function QuickTask({ leadId, onCreated }: { leadId: string; onCreated: () => voi
   );
 }
 
+/** Enrol this lead into one of the saved cadences. */
+function SequencePicker({ leadId, onEnrolled }: { leadId: string; onEnrolled: () => void }) {
+  const [sequences, setSequences] = useState<SequenceWithSteps[]>([]);
+  const [mine, setMine] = useState<SequenceEnrollment[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await fetch("/api/sequences", { cache: "no-store" });
+    if (!res.ok) return;
+    const body = (await res.json()) as {
+      sequences: SequenceWithSteps[];
+      enrollments: SequenceEnrollment[];
+    };
+    setSequences(body.sequences.filter((s) => s.active));
+    setMine(body.enrollments.filter((e) => e.leadId === leadId));
+  }, [leadId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const enroll = async (sequenceId: string) => {
+    setBusy(sequenceId);
+    try {
+      await fetch(`/api/sequences/${sequenceId}/enroll`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ leadIds: [leadId] }),
+      });
+      await load();
+      onEnrolled();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!sequences.length) return null;
+
+  return (
+    <div className="rounded-lg border border-line bg-surface-2 p-3">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-3">
+        Start a sequence
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        {sequences.map((s) => {
+          const active = mine.find((e) => e.sequenceId === s.id && e.status === "active");
+          return (
+            <button
+              key={s.id}
+              type="button"
+              disabled={Boolean(active) || busy === s.id}
+              onClick={() => enroll(s.id)}
+              title={active ? `Already on step ${active.currentStep + 1}` : s.description}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors focus-ring",
+                active
+                  ? "border-brand/40 bg-brand/10 text-brand"
+                  : "border-line bg-surface text-ink-2 hover:border-line-strong hover:text-ink",
+                busy === s.id && "opacity-50",
+              )}
+            >
+              <Zap className="size-3" />
+              {s.name}
+              {active ? ` · step ${active.currentStep + 1}` : ` · ${s.steps.length} steps`}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function LeadActivityPanel({ leadId }: { leadId: string }) {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [tasks, setTasks] = useState<TaskWithLead[]>([]);
@@ -225,6 +299,7 @@ export function LeadActivityPanel({ leadId }: { leadId: string }) {
   return (
     <div className="space-y-4">
       <LogForm leadId={leadId} onLogged={load} />
+      <SequencePicker leadId={leadId} onEnrolled={load} />
 
       {/* Open tasks */}
       <div>

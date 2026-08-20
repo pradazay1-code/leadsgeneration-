@@ -72,6 +72,7 @@ function toUpsert(
       name: biz.name,
       niche,
       phone: biz.phone,
+      email: biz.email,
       website: biz.website,
       websiteHost: normaliseHost(biz.website),
       address: biz.address,

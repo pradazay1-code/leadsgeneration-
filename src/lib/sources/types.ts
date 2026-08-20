@@ -15,6 +15,7 @@ export interface SourceRecord {
 
   name: string;
   phone: string | null;
+  email: string | null;
   website: string | null;
   address: string | null;
   city: string | null;

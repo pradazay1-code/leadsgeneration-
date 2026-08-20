@@ -80,6 +80,8 @@ export interface Lead {
   niche: NicheId;
 
   phone: string | null;
+  /** Published contact email, when a source has one. */
+  email: string | null;
   website: string | null;
   /** Normalised hostname of `website`, e.g. "acmejunk.com". */
   websiteHost: string | null;
@@ -233,6 +235,7 @@ export interface LeadFilters {
   maxReviews?: number;
   hasWebsite?: boolean;
   hasPhone?: boolean;
+  hasEmail?: boolean;
   /** Only leads discovered within the last N days. */
   discoveredWithinDays?: number;
   sort?: LeadSort;

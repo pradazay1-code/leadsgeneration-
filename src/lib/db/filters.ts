@@ -28,6 +28,7 @@ export function matchesFilters(lead: Lead, f: LeadFilters): boolean {
 
   if (typeof f.hasWebsite === "boolean" && Boolean(lead.website) !== f.hasWebsite) return false;
   if (typeof f.hasPhone === "boolean" && Boolean(lead.phone) !== f.hasPhone) return false;
+  if (typeof f.hasEmail === "boolean" && Boolean(lead.email) !== f.hasEmail) return false;
 
   if (typeof f.discoveredWithinDays === "number") {
     if (new Date(lead.discoveredAt).getTime() < daysAgo(f.discoveredWithinDays)) return false;
