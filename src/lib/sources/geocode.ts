@@ -1,11 +1,13 @@
 import "server-only";
 import { fetchJson } from "./types";
+import { reserve } from "../quota";
+import { mapboxToken } from "./mapbox";
 
 export interface GeoPoint {
   lat: number;
   lng: number;
   /** Which service resolved it — surfaced in diagnostics. */
-  via: "geoapify" | "nominatim";
+  via: "mapbox" | "geoapify" | "nominatim";
 }
 
 interface GeoapifyGeocodeResponse {
@@ -29,6 +31,34 @@ function valid(lat: unknown, lng: unknown): { lat: number; lng: number } | null 
 }
 
 /**
+ * Mapbox geocoder. Tried first: it's the token the user already has, its free
+ * allowance is large (100,000/month), and unlike Nominatim it doesn't refuse
+ * cloud hosts.
+ */
+async function viaMapbox(area: string): Promise<GeoPoint | null> {
+  const token = mapboxToken();
+  if (!token) return null;
+
+  const allowed = await reserve("mapbox_geocode");
+  if (!allowed.ok) return null;
+
+  const url = new URL("https://api.mapbox.com/search/geocode/v6/forward");
+  url.searchParams.set("q", area);
+  url.searchParams.set("access_token", token);
+  url.searchParams.set("limit", "1");
+  url.searchParams.set("country", "us");
+  url.searchParams.set("types", "place,locality,postcode");
+
+  interface MapboxGeocode {
+    features?: Array<{ properties?: { coordinates?: { latitude?: number; longitude?: number } } }>;
+  }
+  const data = await fetchJson<MapboxGeocode>(url.toString(), { timeoutMs: 15000 }, "mapbox");
+  const c = data.features?.[0]?.properties?.coordinates;
+  const point = valid(c?.latitude, c?.longitude);
+  return point ? { ...point, via: "mapbox" } : null;
+}
+
+/**
  * Geoapify geocoder. Preferred when a key is present: it's a real API with a
  * key, so unlike Nominatim it doesn't block cloud hosts such as Vercel — which
  * is what silently disabled every radius-based search in production.
@@ -36,6 +66,9 @@ function valid(lat: unknown, lng: unknown): { lat: number; lng: number } | null 
 async function viaGeoapify(area: string): Promise<GeoPoint | null> {
   const key = process.env.GEOAPIFY_API_KEY?.trim();
   if (!key) return null;
+
+  const allowed = await reserve("geoapify_geocode");
+  if (!allowed.ok) return null;
 
   const url = new URL("https://api.geoapify.com/v1/geocode/search");
   url.searchParams.set("text", area);
@@ -60,6 +93,9 @@ async function viaGeoapify(area: string): Promise<GeoPoint | null> {
  * outright — hence the Geoapify path above.
  */
 async function viaNominatim(area: string): Promise<GeoPoint | null> {
+  const allowed = await reserve("nominatim");
+  if (!allowed.ok) return null;
+
   const wait = lastNominatimCallAt + 1100 - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastNominatimCallAt = Date.now();
@@ -82,6 +118,13 @@ async function viaNominatim(area: string): Promise<GeoPoint | null> {
  * territory row, so each territory is geocoded once rather than once per scan.
  */
 export async function geocodeArea(area: string): Promise<GeoPoint | null> {
+  try {
+    const point = await viaMapbox(area);
+    if (point) return point;
+  } catch {
+    // Fall through to the next geocoder.
+  }
+
   try {
     const point = await viaGeoapify(area);
     if (point) return point;

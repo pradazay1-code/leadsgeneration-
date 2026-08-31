@@ -771,4 +771,14 @@ export class PostgresStore implements Store {
     await this.init();
     return crm.dashboard(client());
   }
+
+  async getUsage(key: string, periodType: "month" | "day", period: string): Promise<number> {
+    await this.init();
+    return crm.getUsage(client(), key, periodType, period);
+  }
+
+  async incrementUsage(key: string, count: number): Promise<void> {
+    await this.init();
+    return crm.incrementUsage(client(), key, count);
+  }
 }

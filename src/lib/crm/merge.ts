@@ -10,7 +10,7 @@ export function describeGap(lead: Lead): string {
 
   switch (top?.key) {
     case "no_website":
-      return "you don't have a website listed on Google";
+      return "I couldn't find a website for you on any of the map or search listings";
     case "no_website_unverified":
       return "I couldn't find a website for you anywhere";
     case "weak_website":

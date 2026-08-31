@@ -48,7 +48,8 @@ function suggestedOpener(lead: Lead): string {
 
 const SOURCE_LINK_LABELS: Partial<Record<string, string>> = {
   yelp: "Yelp listing",
-  google_places: "Google Maps",
+  mapbox: "Map listing",
+  web: "Source page",
   bizdata: "OpenStreetMap entry",
   geoapify: "OpenStreetMap entry",
   osm: "OpenStreetMap entry",

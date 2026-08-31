@@ -11,7 +11,8 @@ const SOURCE_NAMES: Record<string, string> = {
   osm: "OpenStreetMap",
   geoapify: "Geoapify",
   yelp: "Yelp",
-  google_places: "Google",
+  mapbox: "Mapbox",
+  web: "Web research",
   manual: "Manual",
 };
 
@@ -33,7 +34,7 @@ const COLUMNS: Array<{ header: string; value: (l: Lead) => string }> = [
   { header: "Notes", value: (l) => l.notes },
   { header: "Why it scored", value: (l) => l.signals.map((s) => s.label).join(" | ") },
   { header: "Discovered", value: (l) => l.discoveredAt.slice(0, 10) },
-  { header: "Google Maps", value: (l) => l.mapsUrl ?? "" },
+  { header: "Listing URL", value: (l) => l.mapsUrl ?? "" },
 ];
 
 /**

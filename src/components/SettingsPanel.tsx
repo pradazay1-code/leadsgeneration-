@@ -20,12 +20,14 @@ import { NICHE_LIST } from "@/lib/niches";
 import type { LeadStats, ProviderStatus, ScanRunSummary, SourceId } from "@/lib/types";
 import { Banner } from "./LeadsWorkspace";
 import { SetupChecklist } from "./SetupChecklist";
+import { QuotaPanel, type QuotaState } from "./QuotaPanel";
 import { Button, SOURCE_META, Spinner } from "./ui";
 
 interface StatsResponse {
   stats: LeadStats;
   recentScans: ScanRunSummary[];
   providers: ProviderStatus[];
+  quotas: QuotaState[];
   storeKind: string;
 }
 
@@ -34,7 +36,8 @@ const PROVIDER_ICONS: Record<string, LucideIcon> = {
   osm: Map,
   geoapify: Map,
   yelp: Star,
-  google_places: KeyRound,
+  mapbox: Map,
+  web: Globe,
 };
 
 function StatusLine({
@@ -127,6 +130,8 @@ export function SettingsPanel() {
       ) : null}
 
       <SetupChecklist />
+
+      {meta?.quotas?.length ? <QuotaPanel quotas={meta.quotas} /> : null}
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* Data sources */}

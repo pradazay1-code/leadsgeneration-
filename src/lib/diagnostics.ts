@@ -1,8 +1,9 @@
 import "server-only";
 import { getStore } from "./db";
 import { connectionString } from "./db/postgres";
-import { geocodeArea } from "./sources/geocode";
+import { geocodeArea, type GeoPoint } from "./sources/geocode";
 import { ALL_PROVIDERS } from "./sources";
+import { QuotaExceededError } from "./quota";
 import type { SourceId } from "./types";
 
 export interface CheckResult {
@@ -26,12 +27,24 @@ export interface DiagnosticsReport {
   canFindLeads: boolean;
 }
 
-async function timed<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: string; ms: number }> {
+const GEOCODER_LABELS: Record<GeoPoint["via"], string> = {
+  mapbox: "Mapbox",
+  geoapify: "Geoapify",
+  nominatim: "OpenStreetMap Nominatim",
+};
+
+async function timed<T>(
+  fn: () => Promise<T>,
+): Promise<{ value?: T; error?: string; quotaPaused?: string; ms: number }> {
   const t0 = Date.now();
   try {
     const value = await fn();
     return { value, ms: Date.now() - t0 };
   } catch (err) {
+    // A spent quota is the system working as designed, not a broken source.
+    if (err instanceof QuotaExceededError) {
+      return { quotaPaused: err.message, ms: Date.now() - t0 };
+    }
     return { error: err instanceof Error ? err.message : String(err), ms: Date.now() - t0 };
   }
 }
@@ -43,15 +56,15 @@ function explain(source: SourceId, message: string): string {
     return "The API key was rejected. Check it's pasted correctly and, on Vercel, that you redeployed after adding it.";
   }
   if (m.includes("403")) {
-    return source === "google_places"
-      ? "Google rejected the key. Enable “Places API (New)” in your Google Cloud project, attach a billing account, and check any key restrictions."
+    return source === "mapbox"
+      ? "Mapbox rejected the token. Check it's a valid public or secret token and that any URL restrictions on it allow your Vercel domain."
       : "The service refused the request (403). If you set key restrictions, they may be blocking Vercel's servers.";
   }
   if (m.includes("429") || m.includes("quota") || m.includes("rate")) {
-    return "Rate limited or out of quota. Free endpoints throttle cloud hosts aggressively — wait a few minutes, or connect Google Places for reliable capacity.";
+    return "Rate limited by the provider. The keyless endpoints throttle cloud hosts aggressively — wait a few minutes. Mapbox has far more reliable capacity.";
   }
   if (m.includes("timeout") || m.includes("abort")) {
-    return "The request timed out. Free endpoints are often slow or overloaded; Google Places is far more reliable.";
+    return "The request timed out. The keyless endpoints are often slow or overloaded; Mapbox is far more reliable.";
   }
   if (m.includes("enotfound") || m.includes("fetch failed") || m.includes("econnrefused")) {
     return "Couldn't reach the service at all — it may be down or blocking this host.";
@@ -130,11 +143,11 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
     status: geoOk ? "ok" : "warn",
     ms: geo.ms,
     detail: geoOk
-      ? `Resolved “${probeArea}” to coordinates via ${geo.value!.via === "geoapify" ? "Geoapify" : "OpenStreetMap Nominatim"}.`
-      : "Couldn't resolve a town to coordinates. OpenStreetMap's free geocoder (Nominatim) routinely blocks cloud hosts like Vercel.",
+      ? `Resolved “${probeArea}” to coordinates via ${GEOCODER_LABELS[geo.value!.via]}.`
+      : "Couldn't resolve a town to coordinates, so every radius-based source is blocked. OpenStreetMap's free geocoder (Nominatim) routinely refuses cloud hosts like Vercel.",
     fix: geoOk
       ? undefined
-      : "Set GEOAPIFY_API_KEY — Geoapify's geocoder is key-based and works from Vercel, which also re-enables the radius searches. Google Places and Yelp search by place name, so they're unaffected either way.",
+      : "Set MAPBOX_ACCESS_TOKEN — Mapbox's geocoder is key-based and works from Vercel. GEOAPIFY_API_KEY works as a backup.",
   });
 
   let anySourceWorked = false;
@@ -147,10 +160,10 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
         status: "off",
         detail: provider.statusDetail(),
         fix:
-          provider.id === "google_places"
-            ? "Strongly recommended — this is the source with real coverage of junk removal and real estate. Set GOOGLE_PLACES_API_KEY and redeploy."
+          provider.id === "mapbox"
+            ? "Your main discovery source. Set MAPBOX_ACCESS_TOKEN and redeploy."
             : provider.needsKey
-              ? `Set ${provider.id === "yelp" ? "YELP_API_KEY" : provider.id === "geoapify" ? "GEOAPIFY_API_KEY" : "the API key"} and redeploy to enable.`
+              ? `Set ${provider.id === "yelp" ? "YELP_API_KEY" : provider.id === "geoapify" ? "GEOAPIFY_API_KEY" : provider.id === "web" ? "BRAVE_API_KEY" : "the API key"} and redeploy to enable.`
               : undefined,
       });
       continue;
@@ -162,7 +175,7 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
         label: provider.label,
         status: "warn",
         detail: "Enabled, but it needs coordinates and the geocoder failed, so it can't run.",
-        fix: "Set GEOAPIFY_API_KEY to fix the geocoder, or use Google Places, which doesn't need one.",
+        fix: "Fix the geocoder first — set MAPBOX_ACCESS_TOKEN, or GEOAPIFY_API_KEY as a backup.",
       });
       continue;
     }
@@ -172,6 +185,18 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
     const probe = await timed(() =>
       provider.search({ niche, territory: probeTerritory as never, limit: 5 }),
     );
+
+    if (probe.quotaPaused) {
+      checks.push({
+        id: provider.id,
+        label: provider.label,
+        status: "warn",
+        ms: probe.ms,
+        detail: `Paused to stay inside the free tier — ${probe.quotaPaused}`,
+        fix: "Nothing is broken. It resumes automatically when the period resets; raise the cap in Settings → API usage if you want more headroom.",
+      });
+      continue;
+    }
 
     if (probe.error) {
       checks.push({
@@ -200,7 +225,7 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
         count > 0
           ? undefined
           : provider.id === "osm" || provider.id === "bizdata"
-            ? "Expected — OpenStreetMap has thin coverage of US service businesses, especially junk removal. Google Places is the fix."
+            ? "Expected — OpenStreetMap has thin coverage of US service businesses, especially junk removal. Mapbox and web research are what carry the scan."
             : "Try a larger town, or widen the territory radius.",
     });
   }

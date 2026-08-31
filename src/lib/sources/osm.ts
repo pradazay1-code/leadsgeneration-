@@ -7,6 +7,7 @@ import {
   type SourceProvider,
   type SourceRecord,
 } from "./types";
+import { QuotaExceededError, reserve } from "../quota";
 
 /**
  * Direct OpenStreetMap Overpass source — free, keyless, and unlike BizData's
@@ -132,6 +133,7 @@ export const osmProvider: SourceProvider = {
   id: "osm",
   label: "OpenStreetMap",
   needsKey: false,
+  needsCoordinates: true,
 
   isConfigured(): boolean {
     return process.env.OSM_DISABLED !== "1";
@@ -153,6 +155,11 @@ export const osmProvider: SourceProvider = {
         `Territory "${territory.label}" has no coordinates yet — geocoding failed or hasn't run.`,
         "osm",
       );
+    }
+
+    const allowed = await reserve("overpass");
+    if (!allowed.ok) {
+      throw new QuotaExceededError(allowed.reason ?? "Overpass quota exhausted", "overpass");
     }
 
     const query = buildQuery(ctx.niche, territory.lat, territory.lng, territory.radiusKm);

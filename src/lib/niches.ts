@@ -7,7 +7,7 @@ export interface NicheConfig {
   /** Text queries fed to Places Text Search, `{area}` replaced with the territory. */
   queries: string[];
   /**
-   * Google category strings that confirm a result really is in this niche.
+   * Provider category strings that confirm a result really is in this niche.
    * A result matching none of these is treated as a weak match and needs a
    * name-keyword hit instead.
    */

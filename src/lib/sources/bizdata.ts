@@ -6,6 +6,7 @@ import {
   type SourceProvider,
   type SourceRecord,
 } from "./types";
+import { QuotaExceededError, reserve } from "../quota";
 
 /**
  * BizData — a free, keyless business-data API built on OpenStreetMap
@@ -83,6 +84,7 @@ export const bizdataProvider: SourceProvider = {
   id: "bizdata",
   label: "BizData",
   needsKey: false,
+  needsCoordinates: false,
 
   isConfigured(): boolean {
     return process.env.BIZDATA_DISABLED !== "1";
@@ -100,6 +102,11 @@ export const bizdataProvider: SourceProvider = {
   async search(ctx: SearchContext): Promise<SourceRecord[]> {
     const category = CATEGORY_BY_NICHE[ctx.niche];
     if (!category) return [];
+
+    const allowed = await reserve("bizdata");
+    if (!allowed.ok) {
+      throw new QuotaExceededError(allowed.reason ?? "BizData quota exhausted", "bizdata");
+    }
 
     const url = new URL(`${baseUrl()}/api/businesses`);
     url.searchParams.set("location", ctx.territory.area);

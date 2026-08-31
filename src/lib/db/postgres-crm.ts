@@ -148,6 +148,16 @@ export async function migrateCrm(sql: Sql): Promise<void> {
   await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_contacted_at timestamptz`;
   await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS do_not_contact boolean NOT NULL DEFAULT false`;
 
+  await sql`
+    CREATE TABLE IF NOT EXISTS api_usage (
+      quota_key   text NOT NULL,
+      period_type text NOT NULL,
+      period      text NOT NULL,
+      count       integer NOT NULL DEFAULT 0,
+      updated_at  timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (quota_key, period_type, period)
+    )`;
+
   await sql`CREATE INDEX IF NOT EXISTS activities_lead_idx ON activities (lead_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS tasks_due_idx ON tasks (due_at) WHERE completed_at IS NULL`;
   await sql`CREATE INDEX IF NOT EXISTS tasks_lead_idx ON tasks (lead_id)`;
@@ -778,4 +788,35 @@ export async function dashboard(sql: Sql): Promise<DashboardSummary> {
     activityLast7Days: activityRows.map((r) => ({ type: r.type as ActivityType, count: Number(r.n) })),
     callsByDay,
   };
+}
+
+/* --------------------------------------------------------- api quotas */
+
+export async function getUsage(
+  sql: Sql,
+  key: string,
+  periodType: "month" | "day",
+  period: string,
+): Promise<number> {
+  const rows = await sql<Row[]>`
+    SELECT count FROM api_usage
+    WHERE quota_key = ${key} AND period_type = ${periodType} AND period = ${period}`;
+  return Number(rows[0]?.count ?? 0);
+}
+
+/**
+ * Bump both period counters atomically. Upserts rather than read-modify-write
+ * so concurrent serverless invocations can't lose increments and overshoot the
+ * free tier.
+ */
+export async function incrementUsage(sql: Sql, key: string, count: number): Promise<void> {
+  const now = new Date().toISOString();
+  const month = now.slice(0, 7);
+  const day = now.slice(0, 10);
+  await sql`
+    INSERT INTO api_usage (quota_key, period_type, period, count, updated_at)
+    VALUES (${key}, 'month', ${month}, ${count}, now()),
+           (${key}, 'day',   ${day},   ${count}, now())
+    ON CONFLICT (quota_key, period_type, period)
+    DO UPDATE SET count = api_usage.count + EXCLUDED.count, updated_at = now()`;
 }

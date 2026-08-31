@@ -179,4 +179,10 @@ export interface Store {
 
   /* ---------------------------------------------------------- dashboard */
   dashboard(): Promise<DashboardSummary>;
+
+  /* -------------------------------------------------------- api quotas */
+  /** Calls recorded for a provider in a period ("month"/"day" + period key). */
+  getUsage(key: string, periodType: "month" | "day", period: string): Promise<number>;
+  /** Record `count` calls against both the current month and day. */
+  incrementUsage(key: string, count: number): Promise<void>;
 }

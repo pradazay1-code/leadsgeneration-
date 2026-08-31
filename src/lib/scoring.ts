@@ -1,5 +1,5 @@
 import { GENERIC_WEAK_DOMAINS, getNiche } from "./niches";
-import { REVIEW_PLATFORMS, WEBSITE_AUTHORITATIVE } from "./sources/types";
+import { REVIEW_PLATFORMS, SOURCE_LABELS, WEBSITE_AUTHORITATIVE } from "./sources/types";
 import type { NicheId, PresenceTier, ScoreResult, ScoreSignal, SourceId } from "./types";
 
 /**
@@ -172,7 +172,9 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
 
   const websiteAuthoritative = biz.sources.some((s) => WEBSITE_AUTHORITATIVE.includes(s));
   const reviewPlatformChecked = biz.checkedSources.some((s) => REVIEW_PLATFORMS.includes(s));
-  const googleChecked = biz.checkedSources.includes("google_places");
+  // Mapbox POI metadata carries website/phone; a web search can confirm absence.
+  const richSourceChecked =
+    biz.checkedSources.includes("mapbox") || biz.checkedSources.includes("web");
 
   // ---- Website footprint (the heaviest signal) ----------------------------
   const web = assessWebsite(biz.website, biz.niche);
@@ -180,7 +182,7 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
     if (websiteAuthoritative) {
       signals.push({
         key: "no_website",
-        label: "No website on file with Google — confirmed gap, top-priority opening",
+        label: "No website found by any source that would know — confirmed gap, top-priority opening",
         points: 30,
       });
     } else {
@@ -221,7 +223,7 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
     } else {
       signals.push({
         key: "review_data_unavailable",
-        label: "No review platform connected — add a Yelp or Google key to grade business age",
+        label: "No review platform connected — review counts are the best proxy for business age",
         points: 8,
       });
     }
@@ -266,7 +268,7 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
     if (realSources.length === 1) {
       signals.push({
         key: "single_source",
-        label: `Only found on ${realSources[0] === "osm" ? "OpenStreetMap" : realSources[0] === "bizdata" ? "BizData" : realSources[0] === "yelp" ? "Yelp" : "Google"} — nobody else lists them yet`,
+        label: `Only found on ${SOURCE_LABELS[realSources[0]] ?? realSources[0]} — nobody else lists them yet`,
         points: 6,
       });
     } else if (realSources.length >= 3) {
@@ -288,9 +290,9 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
   // ---- Normalise against what was knowable --------------------------------
   const maxAchievable =
     6 + // phone
-    (googleChecked ? 30 : 22) + // website best case
+    (richSourceChecked ? 30 : 22) + // website best case
     (reviewPlatformChecked ? 24 : 8) + // reviews best case
-    (googleChecked ? 9 + 7 : 0) + // photos + hours only via Google
+    (richSourceChecked ? 9 + 7 : 0) + // photos + hours need a rich source
     (reviewPlatformChecked ? 6 : 0) + // no_rating only meaningful with review data
     (biz.checkedSources.length >= 2 ? 6 : 0); // single_source bonus possible
 

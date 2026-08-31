@@ -2,11 +2,12 @@ export type NicheId = "junk_removal" | "real_estate";
 
 /** Where a lead's data can come from. */
 export type SourceId =
+  | "mapbox"
+  | "web"
   | "bizdata"
   | "osm"
   | "geoapify"
   | "yelp"
-  | "google_places"
   | "manual";
 
 /** Per-source reference back to the original listing. */

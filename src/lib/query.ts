@@ -10,7 +10,7 @@ import {
   type SourceId,
 } from "./types";
 
-const SOURCE_IDS: SourceId[] = ["bizdata", "osm", "geoapify", "yelp", "google_places", "manual"];
+const SOURCE_IDS: SourceId[] = ["mapbox", "web", "bizdata", "osm", "geoapify", "yelp", "manual"];
 
 const SORTS: LeadSort[] = [
   "score_desc",

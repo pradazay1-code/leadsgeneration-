@@ -49,7 +49,8 @@ interface StatsResponse {
 }
 
 const SOURCE_LABEL: Record<string, string> = {
-  google_places: "Google",
+  mapbox: "Mapbox",
+  web: "Web research",
   yelp: "Yelp",
   geoapify: "Geoapify",
   bizdata: "BizData",

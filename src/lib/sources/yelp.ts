@@ -6,6 +6,7 @@ import {
   type SourceProvider,
   type SourceRecord,
 } from "./types";
+import { QuotaExceededError, reserve } from "../quota";
 
 /**
  * Yelp Fusion API (official) — https://api.yelp.com/v3/businesses/search.
@@ -79,6 +80,7 @@ export const yelpProvider: SourceProvider = {
   id: "yelp",
   label: "Yelp",
   needsKey: true,
+  needsCoordinates: false,
 
   isConfigured(): boolean {
     return Boolean(apiKey());
@@ -104,6 +106,11 @@ export const yelpProvider: SourceProvider = {
     const pageSize = 50;
 
     for (let offset = 0; offset < Math.min(ctx.limit, 200); offset += pageSize) {
+      const allowed = await reserve("yelp");
+      if (!allowed.ok) {
+        throw new QuotaExceededError(allowed.reason ?? "Yelp quota exhausted", "yelp");
+      }
+
       const url = new URL(SEARCH_URL);
       url.searchParams.set("location", ctx.territory.area);
       url.searchParams.set("term", term);

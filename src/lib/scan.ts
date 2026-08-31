@@ -4,6 +4,7 @@ import type { LeadUpsert } from "./db/store";
 import { mergeRecords, type MergedBusiness } from "./merge";
 import { geocodeArea } from "./sources/geocode";
 import { SourceError, configuredProviders, type SourceRecord } from "./sources";
+import { QuotaExceededError } from "./quota";
 import { normaliseHost, scoreBusiness } from "./scoring";
 import type {
   NicheId,
@@ -213,10 +214,10 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     let terr = territory;
 
     // Only geocode if a provider that needs coordinates is actually going to
-    // run — Google and Yelp take a plain place name, so a Nominatim failure
-    // must never block the whole scan.
+    // run. Yelp and the web search take a plain place name, so on a run using
+    // only those, a geocoder outage must not block anything.
     const needsCoords = providers.some(
-      (p) => (p.id === "osm" || p.id === "geoapify") && !benched.has(p.id) && p.isConfigured(),
+      (p) => p.needsCoordinates && !benched.has(p.id) && p.isConfigured(),
     );
     if (needsCoords && (terr.lat === null || terr.lng === null)) {
       const point = await geocodeArea(terr.area);
@@ -225,7 +226,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
         await store.updateTerritory(terr.id, { lat: point.lat, lng: point.lng });
       } else {
         errors.push(
-          `Couldn't geocode "${terr.area}" — radius searches skipped there. Set GEOAPIFY_API_KEY for a geocoder that works from Vercel.`,
+          `Couldn't geocode "${terr.area}" — radius searches skipped there. Set MAPBOX_ACCESS_TOKEN (or GEOAPIFY_API_KEY) for a geocoder that works from Vercel.`,
         );
       }
     }
@@ -265,11 +266,23 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
           placesInspected += found.length;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+
+          // A quota block is expected behaviour, not a fault: bench the
+          // provider quietly for the rest of the run and say why.
+          if (err instanceof QuotaExceededError) {
+            benched.add(provider.id);
+            stat.skipped = stat.queries === 1;
+            stat.skipReason = message;
+            stat.errors.push(message);
+            errors.push(`${provider.label} paused — ${message}`);
+            continue;
+          }
+
           stat.errors.push(`${terr.label} / ${niche}: ${message}`);
           errors.push(`${provider.label} — ${message}`);
           if (err instanceof SourceError && err.fatal) {
             benched.add(provider.id);
-            stat.errors.push("Benched for the rest of this run (auth or quota failure).");
+            stat.errors.push("Benched for the rest of this run (auth failure).");
           }
         }
       }
@@ -347,7 +360,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   const totalReturned = tally.toArray().reduce((n, s) => n + s.returned, 0);
   if (totalReturned === 0 && !errors.length) {
     errors.push(
-      "Every source returned zero listings for these territories. Check the town spelling (use “Town, ST”), widen the radius, or connect Google Places for far better coverage.",
+      "Every source returned zero listings for these territories. Check the town spelling (use “Town, ST”), widen the radius, or connect Mapbox for far better coverage.",
     );
   } else if (totalReturned > 0 && inserted === 0 && updated === 0) {
     errors.push(

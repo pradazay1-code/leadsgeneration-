@@ -49,6 +49,12 @@ export interface SourceProvider {
   isConfigured(): boolean;
   /** Whether this provider requires an API key. */
   needsKey: boolean;
+  /**
+   * True when search() can't run without territory coordinates. The scan uses
+   * this to decide whether geocoding is worth attempting at all, so a geocoder
+   * outage only disables the providers that actually depend on one.
+   */
+  needsCoordinates: boolean;
   /** Short status line for the Settings page. */
   statusDetail(): string;
   /** Which niches this provider can search. */
@@ -77,27 +83,31 @@ export class SourceError extends Error {
  * has none. OSM-derived data (bizdata, osm) frequently just hasn't recorded
  * the tag, and Yelp's API never exposes business websites at all.
  */
-export const WEBSITE_AUTHORITATIVE: SourceId[] = ["google_places"];
+// Mapbox POI metadata and a confirmed web search are the two sources that
+// can actually establish "this business has no website".
+export const WEBSITE_AUTHORITATIVE: SourceId[] = ["mapbox", "web"];
 
 /** Platforms that publish review counts. */
-export const REVIEW_PLATFORMS: SourceId[] = ["yelp", "google_places"];
+export const REVIEW_PLATFORMS: SourceId[] = ["yelp"];
 
 /** Merge priority — richer platforms win field conflicts. */
 export const SOURCE_PRIORITY: SourceId[] = [
-  "google_places",
+  "mapbox",
   "yelp",
   "geoapify",
+  "web",
   "bizdata",
   "osm",
   "manual",
 ];
 
 export const SOURCE_LABELS: Record<SourceId, string> = {
+  mapbox: "Mapbox",
+  web: "Web research",
   bizdata: "BizData",
   osm: "OpenStreetMap",
   geoapify: "Geoapify",
   yelp: "Yelp",
-  google_places: "Google Places",
   manual: "Manual",
 };
 

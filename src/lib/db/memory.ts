@@ -45,6 +45,7 @@ interface MemoryState {
   enrollments: Map<string, SequenceEnrollment>;
   templates: Map<string, MessageTemplate>;
   savedViews: Map<string, SavedView>;
+  usage: Map<string, number>;
   seeded: boolean;
 }
 
@@ -70,6 +71,7 @@ function state(): MemoryState {
       enrollments: new Map(),
       templates: new Map(),
       savedViews: new Map(),
+      usage: new Map(),
       seeded: false,
     };
   }
@@ -776,5 +778,23 @@ export class MemoryStore implements Store {
       activityLast7Days: [...activityCounts.entries()].map(([type, count]) => ({ type, count })),
       callsByDay,
     };
+  }
+
+  /* -------------------------------------------------------- api quotas */
+
+  async getUsage(key: string, periodType: "month" | "day", period: string): Promise<number> {
+    return state().usage.get(`${key}|${periodType}|${period}`) ?? 0;
+  }
+
+  async incrementUsage(key: string, count: number): Promise<void> {
+    const s = state();
+    const now = new Date().toISOString();
+    for (const [type, period] of [
+      ["month", now.slice(0, 7)],
+      ["day", now.slice(0, 10)],
+    ] as const) {
+      const k = `${key}|${type}|${period}`;
+      s.usage.set(k, (s.usage.get(k) ?? 0) + count);
+    }
   }
 }

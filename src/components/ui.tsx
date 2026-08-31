@@ -94,7 +94,8 @@ export const SOURCE_META: Record<SourceId, { label: string; className: string }>
   osm: { label: "OSM", className: "border-lime-500/30 bg-lime-500/10 text-lime-300" },
   geoapify: { label: "Geoapify", className: "border-violet-500/30 bg-violet-500/10 text-violet-300" },
   yelp: { label: "Yelp", className: "border-red-500/25 bg-red-500/10 text-red-300" },
-  google_places: { label: "Google", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
+  mapbox: { label: "Mapbox", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
+  web: { label: "Web", className: "border-orange-500/30 bg-orange-500/10 text-orange-300" },
   manual: { label: "Manual", className: "border-line-strong bg-surface-3 text-ink-3" },
 };
 

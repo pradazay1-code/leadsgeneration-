@@ -7,6 +7,7 @@ import {
   type SourceProvider,
   type SourceRecord,
 } from "./types";
+import { QuotaExceededError, reserve } from "../quota";
 
 /**
  * Geoapify Places API v2 — https://api.geoapify.com/v2/places
@@ -149,6 +150,7 @@ export const geoapifyProvider: SourceProvider = {
   id: "geoapify",
   label: "Geoapify",
   needsKey: true,
+  needsCoordinates: true,
 
   isConfigured(): boolean {
     return Boolean(apiKey());
@@ -158,7 +160,7 @@ export const geoapifyProvider: SourceProvider = {
     if (!this.isConfigured()) {
       return "Set GEOAPIFY_API_KEY to enable. Also powers the geocoder, which fixes OpenStreetMap radius search on Vercel.";
     }
-    return "Connected. Reliable OpenStreetMap-derived place search, and it powers the geocoder so radius searches work on Vercel. Coverage of US service businesses is still OSM-level — pair it with Google Places for depth.";
+    return "Connected. OpenStreetMap-derived place search, and a backup geocoder behind Mapbox. Coverage of US service businesses is OSM-level, so treat it as a supplement to Mapbox rather than a replacement.";
   },
 
   supportsNiche(): boolean {
@@ -185,6 +187,11 @@ export const geoapifyProvider: SourceProvider = {
     // Each category is a separate call so one unknown name can't fail them all.
     for (const category of categoriesFor(ctx.niche)) {
       if (out.length >= ctx.limit) break;
+
+      const allowed = await reserve("geoapify_places");
+      if (!allowed.ok) {
+        throw new QuotaExceededError(allowed.reason ?? "Geoapify quota exhausted", "geoapify_places");
+      }
 
       const url = new URL(PLACES_URL);
       url.searchParams.set("categories", category);

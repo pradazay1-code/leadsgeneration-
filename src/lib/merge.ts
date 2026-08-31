@@ -146,7 +146,7 @@ export function mergeRecords(records: SourceRecord[]): MergedBusiness[] {
       postalCode: pick(group, (r) => r.postalCode),
       lat: pick(group, (r) => r.lat),
       lng: pick(group, (r) => r.lng),
-      mapsUrl: sourceRefs.google_places?.url ?? null,
+      mapsUrl: sourceRefs.mapbox?.url ?? sourceRefs.web?.url ?? null,
       rating,
       reviewCount,
       photoCount: photoCounts.length ? Math.max(...photoCounts) : null,
