@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Radar } from "lucide-react";
 import { Button, Label, Spinner, inputClass } from "@/components/ui";
@@ -72,12 +72,38 @@ function LoginForm() {
   );
 }
 
+/**
+ * Build stamp, shown before sign-in.
+ *
+ * Fetched rather than rendered server-side because this page is static, so a
+ * build-time value would be baked into the cached HTML — exactly the staleness
+ * this is meant to detect.
+ */
+function BuildStamp() {
+  const [info, setInfo] = useState<{ commit: string; branch: string } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/version", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => (d ? setInfo({ commit: d.commit, branch: d.branch }) : null))
+      .catch(() => {});
+  }, []);
+
+  if (!info) return null;
+  return (
+    <p className="mt-6 text-center font-mono text-[10px] text-ink-3">
+      {info.commit} · {info.branch}
+    </p>
+  );
+}
+
 export default function LoginPage() {
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
+    <main className="flex min-h-screen flex-col items-center justify-center px-4">
       <Suspense fallback={<div className="text-sm text-ink-3">Loading…</div>}>
         <LoginForm />
       </Suspense>
+      <BuildStamp />
     </main>
   );
 }
