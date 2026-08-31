@@ -5,6 +5,8 @@ import { geocodeArea, type GeoPoint } from "./sources/geocode";
 import { ALL_PROVIDERS } from "./sources";
 import { QuotaExceededError } from "./quota";
 import { firecrawlConfigured, search as firecrawlSearch } from "./research/firecrawl";
+import { envReport, type EnvReport } from "./env-check";
+import { buildInfo, type BuildInfo } from "./build-info";
 import type { SourceId } from "./types";
 
 export interface CheckResult {
@@ -26,6 +28,10 @@ export interface DiagnosticsReport {
   checks: CheckResult[];
   /** True when at least one source returned real listings. */
   canFindLeads: boolean;
+  /** Which env var names the running process can actually see. */
+  env: EnvReport;
+  /** The commit serving this deployment. */
+  build: BuildInfo;
 }
 
 const GEOCODER_LABELS: Record<GeoPoint["via"], string> = {
@@ -273,5 +279,7 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
     probeArea,
     checks,
     canFindLeads: anySourceWorked,
+    env: envReport(),
+    build: buildInfo(),
   };
 }

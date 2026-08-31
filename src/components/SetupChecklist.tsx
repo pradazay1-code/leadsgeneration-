@@ -21,11 +21,33 @@ export interface CheckResult {
   fix?: string;
 }
 
+export interface EnvVarReport {
+  name: string;
+  label: string;
+  required: boolean;
+  present: boolean;
+  foundAs: string | null;
+  length: number;
+  problems: string[];
+  hint: string;
+}
+
 export interface DiagnosticsReport {
   ranAt: string;
   probeArea: string;
   checks: CheckResult[];
   canFindLeads: boolean;
+  env?: {
+    vars: EnvVarReport[];
+    possibleTypos: Array<{ found: string; didYouMean: string }>;
+    onVercel: boolean;
+  };
+  build?: {
+    sha: string | null;
+    branch: string | null;
+    env: string | null;
+    message: string | null;
+  };
 }
 
 const STATUS_META = {
@@ -138,8 +160,115 @@ export function SetupChecklist({ compact = false }: { compact?: boolean }) {
               <CheckRow key={c.id} check={c} />
             ))}
           </ul>
+
+          {/* What the running process can actually see. This is the block that
+              answers "I added the keys but nothing happened" — a key set under
+              the wrong name, or on a deployment older than the code that reads
+              it, is invisible everywhere else. */}
+          {report.env ? <EnvBlock env={report.env} build={report.build} /> : null}
         </>
       ) : null}
     </section>
+  );
+}
+
+function EnvBlock({
+  env,
+  build,
+}: {
+  env: NonNullable<DiagnosticsReport["env"]>;
+  build: DiagnosticsReport["build"];
+}) {
+  const missingRequired = env.vars.filter((v) => v.required && !v.present);
+  const withProblems = env.vars.filter((v) => v.present && v.problems.length > 0);
+
+  return (
+    <div className="border-t border-line">
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-surface-2 px-4 py-2.5">
+        <h3 className="text-[12px] font-semibold text-ink-2">
+          Environment variables this deployment can see
+        </h3>
+        {build?.sha ? (
+          <span className="font-mono text-[10px] text-ink-3">
+            {build.sha}
+            {build.branch ? ` · ${build.branch}` : null}
+            {build.env ? ` · ${build.env}` : null}
+          </span>
+        ) : null}
+      </div>
+
+      {!env.onVercel ? (
+        <p className="border-t border-line px-4 py-2 text-[12px] text-ink-3">
+          Not running on Vercel, so these come from your local <code>.env.local</code>.
+        </p>
+      ) : null}
+
+      <ul className="px-4 py-2">
+        {env.vars.map((v) => (
+          <li key={v.name} className="flex items-start gap-2 py-1.5 text-[12px]">
+            {v.present ? (
+              <CheckCircle2
+                className={cn(
+                  "mt-0.5 size-3.5 shrink-0",
+                  v.problems.length ? "text-amber-400" : "text-brand",
+                )}
+              />
+            ) : (
+              <XCircle
+                className={cn(
+                  "mt-0.5 size-3.5 shrink-0",
+                  v.required ? "text-red-400" : "text-ink-3",
+                )}
+              />
+            )}
+            <div className="min-w-0 flex-1">
+              <span className="font-mono text-[11px] text-ink-2">{v.name}</span>{" "}
+              {v.present ? (
+                <span className="text-ink-3">
+                  set · {v.length} chars
+                  {v.foundAs !== v.name ? ` · as ${v.foundAs}` : ""}
+                </span>
+              ) : (
+                <span className={v.required ? "text-red-400" : "text-ink-3"}>
+                  not set{v.required ? " — required" : " — optional"}
+                </span>
+              )}
+              {v.problems.map((p) => (
+                <p key={p} className="mt-0.5 text-[11px] leading-relaxed text-amber-300">
+                  {p}
+                </p>
+              ))}
+              {!v.present ? (
+                <p className="mt-0.5 text-[11px] leading-relaxed text-ink-3">{v.hint}</p>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {env.possibleTypos.length ? (
+        <div className="border-t border-line px-4 py-2.5">
+          <p className="text-[12px] font-medium text-amber-300">
+            Set under a name nothing reads:
+          </p>
+          <ul className="mt-1 space-y-0.5">
+            {env.possibleTypos.map((t) => (
+              <li key={t.found} className="font-mono text-[11px] text-ink-3">
+                {t.found} → rename to <span className="text-ink-2">{t.didYouMean}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {(missingRequired.length || withProblems.length) && env.onVercel ? (
+        <p className="border-t border-line bg-surface-2 px-4 py-2.5 text-[11px] leading-relaxed text-ink-3">
+          <span className="font-medium text-ink-2">Remember: </span>
+          environment variables only take effect on a <strong>new deployment</strong>, and must be
+          enabled for the <strong>Production</strong> environment. After editing them go to
+          Deployments → ⋯ → Redeploy.
+        </p>
+      ) : null}
+    </div>
   );
 }
