@@ -4,6 +4,7 @@ import { connectionString } from "./db/postgres";
 import { geocodeArea, type GeoPoint } from "./sources/geocode";
 import { ALL_PROVIDERS } from "./sources";
 import { QuotaExceededError } from "./quota";
+import { firecrawlConfigured, search as firecrawlSearch } from "./research/firecrawl";
 import type { SourceId } from "./types";
 
 export interface CheckResult {
@@ -227,6 +228,43 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
           : provider.id === "osm" || provider.id === "bizdata"
             ? "Expected — OpenStreetMap has thin coverage of US service businesses, especially junk removal. Mapbox and web research are what carry the scan."
             : "Try a larger town, or widen the territory radius.",
+    });
+  }
+
+  // ---- Deep research ------------------------------------------------------
+  // Probed with a plain search rather than a full pass: one search credit is
+  // cheap, an extraction is not, and a search proves the key and the network
+  // path just as well.
+  if (!firecrawlConfigured()) {
+    checks.push({
+      id: "firecrawl",
+      label: "Deep research",
+      status: "off",
+      detail:
+        "Not connected. This is the source that finds brand-new operators the maps have never heard of, and the only one that pulls owner names.",
+      fix: "Set FIRECRAWL_API_KEY and redeploy.",
+    });
+  } else {
+    const probe = await timed(() =>
+      firecrawlSearch(`"junk removal" "${probeArea}"`, { limit: 5 }),
+    );
+    const hits = probe.value?.length ?? 0;
+    if (hits > 0) anySourceWorked = true;
+    checks.push({
+      id: "firecrawl",
+      label: "Deep research",
+      status: probe.error ? "fail" : hits > 0 ? "ok" : "warn",
+      ms: probe.ms,
+      detail: probe.error
+        ? `Live test search failed: ${probe.error.slice(0, 200)}`
+        : hits > 0
+          ? `Working — returned ${hits} result${hits === 1 ? "" : "s"} for ${probeArea}.`
+          : "Reachable, but the test search returned nothing. Most often that means the credit balance is spent.",
+      fix: probe.error
+        ? explain("firecrawl", probe.error)
+        : hits > 0
+          ? undefined
+          : "Check your remaining credits in the Firecrawl dashboard.",
     });
   }
 

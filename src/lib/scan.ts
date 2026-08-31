@@ -4,6 +4,8 @@ import type { LeadUpsert } from "./db/store";
 import { mergeRecords, type MergedBusiness } from "./merge";
 import { geocodeArea } from "./sources/geocode";
 import { SourceError, configuredProviders, type SourceRecord } from "./sources";
+import { runResearch, type ResearchStats } from "./research/agent";
+import { firecrawlConfigured } from "./research/firecrawl";
 import { QuotaExceededError } from "./quota";
 import { normaliseHost, scoreBusiness } from "./scoring";
 import type {
@@ -27,6 +29,13 @@ export const DEFAULT_MIN_SCORE = 30;
  * rather than being killed mid-flight with nothing written.
  */
 const DEFAULT_BUDGET_MS = 45_000;
+
+/**
+ * Slice of the run any single research pass may consume. Research is the
+ * slowest stage by far (a search plus several page reads), so it gets a hard
+ * sub-budget rather than being allowed to eat the whole scan.
+ */
+const RESEARCH_SLICE_MS = 20_000;
 
 export interface ScanOptions {
   /** Restrict the run to specific territories. Defaults to every enabled one. */
@@ -60,6 +69,8 @@ function toUpsert(
     categories: biz.categories,
     sources: biz.sources,
     checkedSources,
+    foundedYear: biz.foundedYear,
+    looksNew: biz.looksNew,
   });
 
   if (result.disqualified) return { upsert: null, reason: result.disqualifiedReason };
@@ -67,6 +78,9 @@ function toUpsert(
   return {
     upsert: {
       sourceId: `m:${niche}:${biz.identityKey}`,
+      // Every key this business matched on, namespaced per niche so a hauler
+      // and an agent sharing an office phone stay separate leads.
+      identityKeys: biz.identityKeys.map((k) => `m:${niche}:${k}`),
       source: biz.primarySource,
       sources: biz.sources,
       sourceRefs: biz.sourceRefs,
@@ -89,6 +103,9 @@ function toUpsert(
       hasHours: biz.hasHours,
       businessStatus: biz.businessStatus,
       categories: biz.categories,
+      ownerName: biz.ownerName,
+      foundedYear: biz.foundedYear,
+      looksNew: biz.looksNew,
       score: result.score,
       tier: result.tier,
       signals: result.signals,
@@ -96,6 +113,19 @@ function toUpsert(
       territoryId,
     },
   };
+}
+
+/** Fold every territory's research pass into one run-level total. */
+function sumResearch(all: ResearchStats[]): ResearchStats {
+  return all.reduce((acc, s) => ({
+    queriesRun: acc.queriesRun + s.queriesRun,
+    hitsSeen: acc.hitsSeen + s.hitsSeen,
+    skippedAlreadyResearched: acc.skippedAlreadyResearched + s.skippedAlreadyResearched,
+    skippedKnownBusiness: acc.skippedKnownBusiness + s.skippedKnownBusiness,
+    skippedAggregator: acc.skippedAggregator + s.skippedAggregator,
+    pagesEnriched: acc.pagesEnriched + s.pagesEnriched,
+    newBusinessHits: acc.newBusinessHits + s.newBusinessHits,
+  }));
 }
 
 /** Mutable per-source tally, collapsed into SourceScanStat at the end. */
@@ -153,7 +183,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       sourcesUsed: [],
       sourceStats: [],
       errors: [
-        "No data source is available. Add GOOGLE_PLACES_API_KEY (recommended) or YELP_API_KEY in your Vercel environment variables, then redeploy.",
+        "No data source is available. Add MAPBOX_ACCESS_TOKEN and FIRECRAWL_API_KEY in your Vercel environment variables, then redeploy.",
       ],
       candidates: [],
       rejectionCounts: {},
@@ -195,6 +225,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   // Providers that hit an auth/quota wall get benched for the rest of the run.
   const benched = new Set<SourceId>();
   const sourcesUsed = new Set<SourceId>();
+  const researchEnabled = firecrawlConfigured();
+  const researchStats: ResearchStats[] = [];
   let placesInspected = 0;
   let skipped = 0;
   let ranOutOfTime = false;
@@ -283,6 +315,43 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
           if (err instanceof SourceError && err.fatal) {
             benched.add(provider.id);
             stat.errors.push("Benched for the rest of this run (auth failure).");
+          }
+        }
+      }
+
+      // ---- Deep research -------------------------------------------------
+      // Runs after the map sources so it can see what they already found, and
+      // so its scarce credits go to businesses the maps missed rather than
+      // re-confirming ones they didn't.
+      if (researchEnabled && !benched.has("firecrawl") && Date.now() < deadline) {
+        const stat = tally.get("firecrawl");
+        stat.queries += 1;
+        try {
+          const research = await runResearch({
+            niche,
+            territory: terr,
+            limit: perSourceLimit,
+            // Leave a slice of the run for merging and persistence.
+            deadline: Math.min(deadline, Date.now() + RESEARCH_SLICE_MS),
+          });
+          checkedSources.push("firecrawl");
+          stat.returned += research.records.length;
+          if (research.records.length) sourcesUsed.add("firecrawl");
+          records.push(...research.records);
+          placesInspected += research.records.length;
+          researchStats.push(research.stats);
+          for (const n of research.notes) if (!errors.includes(n)) errors.push(n);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (err instanceof QuotaExceededError) {
+            benched.add("firecrawl");
+            stat.skipped = stat.queries === 1;
+            stat.skipReason = message;
+            errors.push(`Deep research paused — ${message}`);
+          } else {
+            stat.errors.push(`${terr.label} / ${niche}: ${message}`);
+            errors.push(`Deep research — ${message}`);
+            if (err instanceof SourceError && err.fatal) benched.add("firecrawl");
           }
         }
       }
@@ -382,6 +451,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     candidates,
     rejectionCounts,
     noSourcesConfigured: false,
+    research: researchStats.length ? sumResearch(researchStats) : undefined,
   };
 
   await store.recordScan(summary);

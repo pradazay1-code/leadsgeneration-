@@ -21,6 +21,11 @@ export interface ScorableBusiness {
   sources: SourceId[];
   /** Platforms that were queried for this territory×niche this scan. */
   checkedSources: SourceId[];
+
+  /** Year the business publicly claims it started, when it claims one. */
+  foundedYear?: number | null;
+  /** True when a source presented the business as newly launched. */
+  looksNew?: boolean | null;
 }
 
 export interface WebsiteVerdict {
@@ -287,6 +292,40 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
     signals.push({ key: "no_phone", label: "No phone listed — harder to reach", points: -8 });
   }
 
+  // ---- Business age -------------------------------------------------------
+  // Newness is the thing being bought here, so a business that says outright
+  // it just started outranks one merely inferred to be small. A stated founding
+  // year beats launch language, since it's a fact rather than marketing tone.
+  const thisYear = new Date().getUTCFullYear();
+  const age = biz.foundedYear ? thisYear - biz.foundedYear : null;
+  const ageKnown = age !== null;
+
+  if (age !== null && age <= 1) {
+    signals.push({
+      key: "founded_this_year",
+      label: `Started in ${biz.foundedYear} — brand new, nothing set up yet`,
+      points: 26,
+    });
+  } else if (age !== null && age <= 3) {
+    signals.push({
+      key: "founded_recently",
+      label: `Started in ${biz.foundedYear} — still building their footprint`,
+      points: 16,
+    });
+  } else if (age !== null && age >= 12) {
+    signals.push({
+      key: "long_established",
+      label: `Trading since ${biz.foundedYear} — long established, already sorted`,
+      points: -18,
+    });
+  } else if (biz.looksNew === true) {
+    signals.push({
+      key: "launch_language",
+      label: "Describes itself as newly opened — catch them before anyone else does",
+      points: 18,
+    });
+  }
+
   // ---- Normalise against what was knowable --------------------------------
   const maxAchievable =
     6 + // phone
@@ -294,7 +333,10 @@ export function scoreBusiness(biz: ScorableBusiness): ScoreResult {
     (reviewPlatformChecked ? 24 : 8) + // reviews best case
     (richSourceChecked ? 9 + 7 : 0) + // photos + hours need a rich source
     (reviewPlatformChecked ? 6 : 0) + // no_rating only meaningful with review data
-    (biz.checkedSources.length >= 2 ? 6 : 0); // single_source bonus possible
+    (biz.checkedSources.length >= 2 ? 6 : 0) + // single_source bonus possible
+    // Age points are only reachable when something actually reported an age,
+    // so a lead with no age data isn't penalised against those that have it.
+    (ageKnown ? 26 : biz.looksNew !== undefined && biz.looksNew !== null ? 18 : 0);
 
   const raw = signals.reduce((sum, s) => sum + s.points, 0);
   const score = Math.max(0, Math.min(100, Math.round((raw / maxAchievable) * 100)));

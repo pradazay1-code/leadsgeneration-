@@ -19,7 +19,8 @@ import type {
 import { LEAD_STATUSES } from "../types";
 import { TIER_ORDER } from "../scoring";
 import type {
-  Facets, LeadPage, LeadPatch, LeadUpsert, Store, TaskFilters, TaskInput, UpsertResult,
+  Facets, LeadPage, LeadPatch, LeadUpsert, ResearchTargetInput, Store, TaskFilters, TaskInput,
+  UpsertResult,
 } from "./store";
 import type {
   Activity, ActivityInput, DashboardSummary, MessageTemplate, Pipeline, PipelineStage,
@@ -100,6 +101,9 @@ function toLead(r: Row): Lead {
     hasHours: r.has_hours === null || r.has_hours === undefined ? null : Boolean(r.has_hours),
     businessStatus: r.business_status,
     categories: (r.categories ?? []) as string[],
+    ownerName: r.owner_name ?? null,
+    foundedYear: numOrNull(r.founded_year),
+    looksNew: r.looks_new === null || r.looks_new === undefined ? null : Boolean(r.looks_new),
     score: Number(r.score ?? 0),
     tier: r.tier as PresenceTier,
     signals: (r.signals ?? []) as ScoreSignal[],
@@ -356,8 +360,54 @@ export class PostgresStore implements Store {
       return { pipelineId: p?.id ?? null, stageId: stage?.id ?? null };
     };
 
+    // Resolve every candidate key up front: a business seen before under a
+    // different key must update that row rather than create a second one.
+    const allKeys = [...new Set(incoming.flatMap((l) => l.identityKeys ?? [l.sourceId]))];
+    const known = await this.resolveIdentities(allKeys);
+
     for (const l of incoming) {
       const entry = entryFor(l.niche);
+      const keys = l.identityKeys?.length ? l.identityKeys : [l.sourceId];
+
+      // If any key already points at a lead, that lead *is* this business.
+      const existingId = keys.map((k) => known.get(k)).find(Boolean) ?? null;
+      if (existingId) {
+        await sql`
+          UPDATE leads SET
+            source = ${l.source},
+            sources = ${jsonb(l.sources)},
+            source_refs = ${jsonb(l.sourceRefs)},
+            name = ${l.name},
+            phone = COALESCE(${l.phone}, phone),
+            email = COALESCE(${l.email}, email),
+            website = COALESCE(${l.website}, website),
+            website_host = COALESCE(${l.websiteHost}, website_host),
+            address = COALESCE(${l.address}, address),
+            city = COALESCE(${l.city}, city),
+            state = COALESCE(${l.state}, state),
+            postal_code = COALESCE(${l.postalCode}, postal_code),
+            lat = COALESCE(${l.lat}, lat),
+            lng = COALESCE(${l.lng}, lng),
+            maps_url = COALESCE(${l.mapsUrl}, maps_url),
+            rating = COALESCE(${l.rating}, rating),
+            review_count = COALESCE(${l.reviewCount}, review_count),
+            photo_count = COALESCE(${l.photoCount}, photo_count),
+            has_hours = COALESCE(${l.hasHours}, has_hours),
+            business_status = COALESCE(${l.businessStatus}, business_status),
+            categories = ${jsonb(l.categories)},
+            owner_name = COALESCE(${l.ownerName}, owner_name),
+            founded_year = COALESCE(${l.foundedYear}, founded_year),
+            looks_new = COALESCE(${l.looksNew}, looks_new),
+            score = ${l.score},
+            tier = ${l.tier},
+            signals = ${jsonb(l.signals)},
+            last_seen_at = ${l.lastSeenAt}
+          WHERE id = ${existingId}::uuid`;
+        await this.linkIdentities(existingId, keys);
+        updated += 1;
+        continue;
+      }
+
       // `xmax = 0` is the standard Postgres trick for telling an INSERT apart
       // from an ON CONFLICT UPDATE in the RETURNING clause.
       const rows = await sql<Row[]>`
@@ -365,14 +415,16 @@ export class PostgresStore implements Store {
           source_id, source, sources, source_refs, name, niche, phone, email, website,
           website_host, address, city, state, postal_code, lat, lng, maps_url,
           rating, review_count, photo_count, has_hours, business_status,
-          categories, score, tier, signals, last_seen_at, territory_id,
+          categories, owner_name, founded_year, looks_new,
+          score, tier, signals, last_seen_at, territory_id,
           pipeline_id, stage_id
         ) VALUES (
           ${l.sourceId}, ${l.source}, ${jsonb(l.sources)}, ${jsonb(l.sourceRefs)},
           ${l.name}, ${l.niche}, ${l.phone}, ${l.email}, ${l.website}, ${l.websiteHost},
           ${l.address}, ${l.city}, ${l.state}, ${l.postalCode}, ${l.lat}, ${l.lng},
           ${l.mapsUrl}, ${l.rating}, ${l.reviewCount}, ${l.photoCount},
-          ${l.hasHours}, ${l.businessStatus}, ${jsonb(l.categories)}, ${l.score},
+          ${l.hasHours}, ${l.businessStatus}, ${jsonb(l.categories)},
+          ${l.ownerName}, ${l.foundedYear}, ${l.looksNew}, ${l.score},
           ${l.tier}, ${jsonb(l.signals)}, ${l.lastSeenAt}, ${l.territoryId},
           ${entry.pipelineId}, ${entry.stageId}
         )
@@ -398,19 +450,99 @@ export class PostgresStore implements Store {
           has_hours = EXCLUDED.has_hours,
           business_status = EXCLUDED.business_status,
           categories = EXCLUDED.categories,
+          owner_name = COALESCE(EXCLUDED.owner_name, leads.owner_name),
+          founded_year = COALESCE(EXCLUDED.founded_year, leads.founded_year),
+          looks_new = COALESCE(EXCLUDED.looks_new, leads.looks_new),
           score = EXCLUDED.score,
           tier = EXCLUDED.tier,
           signals = EXCLUDED.signals,
           last_seen_at = EXCLUDED.last_seen_at
         RETURNING id, (xmax = 0) AS is_insert`;
 
+      const id = String(rows[0].id);
+      await this.linkIdentities(id, keys);
+      for (const k of keys) known.set(k, id);
+
       if (rows[0]?.is_insert) {
         inserted += 1;
-        insertedIds.push(String(rows[0].id));
+        insertedIds.push(id);
       } else updated += 1;
     }
 
     return { inserted, updated, insertedIds };
+  }
+
+  /**
+   * Record every key a lead is known by.
+   *
+   * A key already claimed by a *different* lead is left alone: the first row
+   * to claim it keeps it, so a weak name-based collision can never silently
+   * re-point an established lead at someone else's business.
+   */
+  private async linkIdentities(leadId: string, keys: string[]): Promise<void> {
+    if (!keys.length) return;
+    const sql = client();
+    await sql`
+      INSERT INTO lead_identities ${sql(
+        keys.map((identity_key) => ({ identity_key, lead_id: leadId })),
+      )}
+      ON CONFLICT (identity_key) DO NOTHING`;
+  }
+
+  async resolveIdentities(keys: string[]): Promise<Map<string, string>> {
+    await this.init();
+    if (!keys.length) return new Map();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      SELECT identity_key, lead_id FROM lead_identities WHERE identity_key = ANY(${keys})`;
+    return new Map(rows.map((r) => [String(r.identity_key), String(r.lead_id)]));
+  }
+
+  async seenResearchUrls(urls: string[]): Promise<Set<string>> {
+    await this.init();
+    if (!urls.length) return new Set();
+    const sql = client();
+    const rows = await sql<Row[]>`SELECT url FROM research_targets WHERE url = ANY(${urls})`;
+    return new Set(rows.map((r) => String(r.url)));
+  }
+
+  async seenResearchDomains(domains: string[]): Promise<Set<string>> {
+    await this.init();
+    if (!domains.length) return new Set();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      SELECT DISTINCT domain FROM research_targets WHERE domain = ANY(${domains})`;
+    return new Set(rows.map((r) => String(r.domain)));
+  }
+
+  async recordResearch(entries: ResearchTargetInput[]): Promise<void> {
+    await this.init();
+    if (!entries.length) return;
+    const sql = client();
+    await sql`
+      INSERT INTO research_targets ${sql(
+        entries.map((e) => ({
+          url: e.url,
+          domain: e.domain,
+          niche: e.niche,
+          outcome: e.outcome,
+          lead_id: e.leadId ?? null,
+        })),
+      )}
+      ON CONFLICT (url) DO UPDATE SET
+        outcome = EXCLUDED.outcome,
+        lead_id = COALESCE(EXCLUDED.lead_id, research_targets.lead_id),
+        researched_at = now()`;
+  }
+
+  async researchStats(): Promise<{ total: number; converted: number }> {
+    await this.init();
+    const sql = client();
+    const [row] = await sql<Row[]>`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE outcome = 'lead')::int AS converted
+      FROM research_targets`;
+    return { total: Number(row?.total ?? 0), converted: Number(row?.converted ?? 0) };
   }
 
   async patchLead(id: string, patch: LeadPatch): Promise<Lead | null> {

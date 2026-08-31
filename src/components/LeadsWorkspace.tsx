@@ -317,13 +317,30 @@ export function LeadsWorkspace() {
               ? scanResult.errors.slice(0, 3).join(" · ")
               : `Checked ${scanResult.placesInspected} listings across ${scanResult.territoriesScanned} territor${scanResult.territoriesScanned === 1 ? "y" : "ies"}. ${scanResult.skipped} filtered out as established, franchise, or off-niche.`
           }
-          detail={scanResult.sourceStats
-            .map((s) =>
-              s.skipped
-                ? `${SOURCE_LABEL[s.source] ?? s.source}: skipped (${s.skipReason ?? "n/a"})`
-                : `${SOURCE_LABEL[s.source] ?? s.source}: ${s.returned} listing${s.returned === 1 ? "" : "s"}${s.errors.length ? ` — ${s.errors.length} error(s)` : ""}`,
-            )
-            .join("  ·  ")}
+          detail={[
+            scanResult.sourceStats
+              .map((s) =>
+                s.skipped
+                  ? `${SOURCE_LABEL[s.source] ?? s.source}: skipped (${s.skipReason ?? "n/a"})`
+                  : `${SOURCE_LABEL[s.source] ?? s.source}: ${s.returned} listing${s.returned === 1 ? "" : "s"}${s.errors.length ? ` — ${s.errors.length} error(s)` : ""}`,
+              )
+              .join("  ·  "),
+            // The research funnel, when it ran. The skip counts are the point:
+            // they show how much was passed over as already-known rather than
+            // handed back to you a second time.
+            scanResult.research
+              ? [
+                  `Deep research: ${scanResult.research.queriesRun} searches → ${scanResult.research.hitsSeen} results`,
+                  `${scanResult.research.skippedKnownBusiness} already yours`,
+                  `${scanResult.research.skippedAlreadyResearched} already researched`,
+                  `${scanResult.research.skippedAggregator} directories/franchises`,
+                  `${scanResult.research.pagesEnriched} pages read`,
+                  `${scanResult.research.newBusinessHits} look brand new`,
+                ].join("  ·  ")
+              : null,
+          ]
+            .filter(Boolean)
+            .join("\n")}
           onDismiss={() => setScanResult(null)}
         />
       ) : null}
@@ -503,7 +520,9 @@ export function Banner({
         <p className="text-[13px] font-semibold text-ink">{title}</p>
         <p className="mt-0.5 text-[13px] leading-relaxed text-ink-2">{body}</p>
         {detail ? (
-          <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-ink-3">{detail}</p>
+          <p className="mt-1.5 whitespace-pre-line font-mono text-[11px] leading-relaxed text-ink-3">
+            {detail}
+          </p>
         ) : null}
       </div>
       {onDismiss ? (

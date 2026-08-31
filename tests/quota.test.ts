@@ -94,6 +94,15 @@ describe("cap configuration", () => {
     }
   });
 
+  it("keeps the two Firecrawl caps inside their single shared credit pool", () => {
+    // Firecrawl bills search and scrape from one balance, so capping each
+    // under the allowance separately would still allow double the spend.
+    const pool = QUOTA_LIMITS.firecrawl_search.freeTier.monthly!;
+    const combined =
+      QUOTA_LIMITS.firecrawl_search.cap.monthly! + QUOTA_LIMITS.firecrawl_scrape.cap.monthly!;
+    assert.ok(combined <= pool, `combined Firecrawl cap ${combined} exceeds the ${pool}-credit pool`);
+  });
+
   it("keeps Yelp off by default, since it bills once the trial ends", () => {
     const cap = effectiveCap("yelp");
     assert.equal(cap.monthly, 0);

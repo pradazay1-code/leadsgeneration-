@@ -25,6 +25,7 @@ import type {
   LeadPage,
   LeadPatch,
   LeadUpsert,
+  ResearchTargetInput,
   Store,
   TaskFilters,
   TaskInput,
@@ -46,6 +47,13 @@ interface MemoryState {
   templates: Map<string, MessageTemplate>;
   savedViews: Map<string, SavedView>;
   usage: Map<string, number>;
+  /** identity key -> lead id, so dedupe survives between scans. */
+  identities: Map<string, string>;
+  /** url -> what researching it found, so credits are never spent twice. */
+  research: Map<
+    string,
+    { domain: string; outcome: string; leadId: string | null; researchedAt: string }
+  >;
   seeded: boolean;
 }
 
@@ -72,6 +80,8 @@ function state(): MemoryState {
       templates: new Map(),
       savedViews: new Map(),
       usage: new Map(),
+      identities: new Map(),
+      research: new Map(),
       seeded: false,
     };
   }
@@ -190,16 +200,42 @@ export class MemoryStore implements Store {
 
   async upsertLeads(incoming: LeadUpsert[]): Promise<UpsertResult> {
     const s = state();
-    const bySource = new Map([...s.leads.values()].map((l) => [l.sourceId, l]));
     let inserted = 0;
     let updated = 0;
     const insertedIds: string[] = [];
 
     for (const row of incoming) {
-      const existing = bySource.get(row.sourceId);
+      const keys = row.identityKeys?.length ? row.identityKeys : [row.sourceId];
+      // Any previously seen key identifies this business, so a lead found
+      // under a different key last time is updated rather than duplicated.
+      const existingId = keys.map((k) => s.identities.get(k)).find(Boolean) ?? null;
+      const existing = existingId ? s.leads.get(existingId) : undefined;
+
       if (existing) {
-        // Preserve everything the user owns.
-        s.leads.set(existing.id, { ...existing, ...row, id: existing.id });
+        // Preserve everything the user owns, and never blank a field the new
+        // record simply didn't know about.
+        s.leads.set(existing.id, {
+          ...existing,
+          ...row,
+          id: existing.id,
+          sourceId: existing.sourceId,
+          phone: row.phone ?? existing.phone,
+          email: row.email ?? existing.email,
+          website: row.website ?? existing.website,
+          websiteHost: row.websiteHost ?? existing.websiteHost,
+          address: row.address ?? existing.address,
+          city: row.city ?? existing.city,
+          state: row.state ?? existing.state,
+          postalCode: row.postalCode ?? existing.postalCode,
+          lat: row.lat ?? existing.lat,
+          lng: row.lng ?? existing.lng,
+          rating: row.rating ?? existing.rating,
+          reviewCount: row.reviewCount ?? existing.reviewCount,
+          photoCount: row.photoCount ?? existing.photoCount,
+          hasHours: row.hasHours ?? existing.hasHours,
+          discoveredAt: existing.discoveredAt,
+        });
+        for (const k of keys) if (!s.identities.has(k)) s.identities.set(k, existing.id);
         updated += 1;
       } else {
         const id = randomUUID();
@@ -220,7 +256,7 @@ export class MemoryStore implements Store {
           discoveredAt: row.lastSeenAt,
         };
         s.leads.set(id, lead);
-        bySource.set(row.sourceId, lead);
+        for (const k of keys) if (!s.identities.has(k)) s.identities.set(k, id);
         inserted += 1;
         insertedIds.push(id);
       }
@@ -796,5 +832,48 @@ export class MemoryStore implements Store {
       const k = `${key}|${type}|${period}`;
       s.usage.set(k, (s.usage.get(k) ?? 0) + count);
     }
+  }
+
+  /* --------------------------------------------------------- identities */
+
+  async resolveIdentities(keys: string[]): Promise<Map<string, string>> {
+    const s = state();
+    const out = new Map<string, string>();
+    for (const k of keys) {
+      const id = s.identities.get(k);
+      if (id) out.set(k, id);
+    }
+    return out;
+  }
+
+  /* ------------------------------------------------------------ research */
+
+  async seenResearchUrls(urls: string[]): Promise<Set<string>> {
+    const s = state();
+    return new Set(urls.filter((u) => s.research.has(u)));
+  }
+
+  async seenResearchDomains(domains: string[]): Promise<Set<string>> {
+    const s = state();
+    const seen = new Set([...s.research.values()].map((r) => r.domain));
+    return new Set(domains.filter((d) => seen.has(d)));
+  }
+
+  async recordResearch(entries: ResearchTargetInput[]): Promise<void> {
+    const s = state();
+    for (const e of entries) {
+      s.research.set(e.url, {
+        domain: e.domain,
+        outcome: e.outcome,
+        leadId: e.leadId ?? null,
+        researchedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  async researchStats(): Promise<{ total: number; converted: number }> {
+    const s = state();
+    const all = [...s.research.values()];
+    return { total: all.length, converted: all.filter((r) => r.outcome === "lead").length };
   }
 }

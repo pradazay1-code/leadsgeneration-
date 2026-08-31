@@ -32,6 +32,16 @@ export interface SourceRecord {
   businessStatus: string | null;
   /** Normalised category hints, e.g. "real_estate_agency", "junk_removal". */
   categories: string[];
+
+  /* --- Research fields. Only the deep-research source fills these in. --- */
+  /** Owner, founder or principal agent, when the business names one. */
+  ownerName?: string | null;
+  /** Year the business says it started. */
+  foundedYear?: number | null;
+  /** True when the page presents the business as newly launched. */
+  looksNew?: boolean | null;
+  /** Which research angle surfaced this, for the scan report. */
+  researchAngle?: string | null;
 }
 
 export interface SearchContext {
@@ -83,15 +93,20 @@ export class SourceError extends Error {
  * has none. OSM-derived data (bizdata, osm) frequently just hasn't recorded
  * the tag, and Yelp's API never exposes business websites at all.
  */
-// Mapbox POI metadata and a confirmed web search are the two sources that
-// can actually establish "this business has no website".
-export const WEBSITE_AUTHORITATIVE: SourceId[] = ["mapbox", "web"];
+// Mapbox POI metadata, a confirmed web search, and a deep-research pass that
+// actually went looking are the sources that can establish "this business has
+// no website" as a finding rather than a gap in someone's dataset.
+export const WEBSITE_AUTHORITATIVE: SourceId[] = ["mapbox", "web", "firecrawl"];
 
 /** Platforms that publish review counts. */
 export const REVIEW_PLATFORMS: SourceId[] = ["yelp"];
 
 /** Merge priority — richer platforms win field conflicts. */
 export const SOURCE_PRIORITY: SourceId[] = [
+  // Firecrawl leads on field conflicts: it reads the business's own page, so
+  // its owner name, email and phone come from the horse's mouth rather than
+  // from a third-party listing that may be years stale.
+  "firecrawl",
   "mapbox",
   "yelp",
   "geoapify",
@@ -103,6 +118,7 @@ export const SOURCE_PRIORITY: SourceId[] = [
 
 export const SOURCE_LABELS: Record<SourceId, string> = {
   mapbox: "Mapbox",
+  firecrawl: "Deep research",
   web: "Web research",
   bizdata: "BizData",
   osm: "OpenStreetMap",

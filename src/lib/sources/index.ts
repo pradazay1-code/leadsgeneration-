@@ -7,6 +7,7 @@ import { geoapifyProvider } from "./geoapify";
 import { osmProvider } from "./osm";
 import type { SourceProvider } from "./types";
 import { yelpProvider } from "./yelp";
+import { firecrawlConfigured } from "../research/firecrawl";
 
 /**
  * Execution order for a scan. Mapbox leads because it has the best coverage
@@ -32,9 +33,9 @@ export function configuredProviders(): SourceProvider[] {
 }
 
 export function providerStatuses(): ProviderStatus[] {
-  // Settings-page order: the two that matter most first, supplements after.
+  // Settings-page order: the ones that matter most first, supplements after.
   const order: SourceId[] = ["mapbox", "web", "geoapify", "yelp", "bizdata", "osm"];
-  return order.map((id) => {
+  const fromProviders = order.map((id) => {
     const p = ALL_PROVIDERS.find((x) => x.id === id)!;
     return {
       id: p.id,
@@ -44,6 +45,22 @@ export function providerStatuses(): ProviderStatus[] {
       detail: p.statusDetail(),
     };
   });
+
+  // Deep research isn't a plain search provider — it plans queries, filters
+  // against what's already known and only then enriches — so it's driven
+  // directly by the scan rather than through the provider loop. It still
+  // belongs in the same status list.
+  const research: ProviderStatus = {
+    id: "firecrawl",
+    label: "Deep research",
+    configured: firecrawlConfigured(),
+    needsKey: true,
+    detail: firecrawlConfigured()
+      ? "Connected. Searches from several angles for businesses the maps miss, skips anything already known, then reads the survivors for owner name, email and founding year."
+      : "Set FIRECRAWL_API_KEY to enable. This is the source that finds brand-new operators the map data has never heard of, and the only one that pulls owner names.",
+  };
+
+  return [fromProviders[0], research, ...fromProviders.slice(1)];
 }
 
 export { SourceError } from "./types";

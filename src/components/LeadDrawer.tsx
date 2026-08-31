@@ -230,6 +230,58 @@ export function LeadDrawer({
             </ul>
           </section>
 
+          {/* What deep research turned up. Only rendered when it found
+              something, so the panel never shows empty rows. */}
+          {lead.ownerName || lead.foundedYear || lead.looksNew || lead.email ? (
+            <section className="border-b border-line px-5 py-4">
+              <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+                Research findings
+              </h4>
+              <dl className="grid gap-x-4 gap-y-2 text-[13px] sm:grid-cols-2">
+                {lead.ownerName ? (
+                  <div>
+                    <dt className="text-ink-3">Owner / principal</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-ink-1">
+                      {lead.ownerName}
+                      <CopyButton text={lead.ownerName} label="Copy" />
+                    </dd>
+                  </div>
+                ) : null}
+                {lead.email ? (
+                  <div>
+                    <dt className="text-ink-3">Email</dt>
+                    <dd className="flex items-center gap-1.5 font-medium text-ink-1">
+                      <a href={`mailto:${lead.email}`} className="focus-ring hover:underline">
+                        {lead.email}
+                      </a>
+                      <CopyButton text={lead.email} label="Copy" />
+                    </dd>
+                  </div>
+                ) : null}
+                {lead.foundedYear ? (
+                  <div>
+                    <dt className="text-ink-3">Started trading</dt>
+                    <dd className="font-medium text-ink-1">
+                      {lead.foundedYear}
+                      <span className="ml-1.5 font-normal text-ink-3">
+                        ({Math.max(0, new Date().getUTCFullYear() - lead.foundedYear)} yr
+                        {new Date().getUTCFullYear() - lead.foundedYear === 1 ? "" : "s"})
+                      </span>
+                    </dd>
+                  </div>
+                ) : null}
+                {lead.looksNew ? (
+                  <div>
+                    <dt className="text-ink-3">Launch signal</dt>
+                    <dd className="font-medium text-emerald-300">
+                      Presents itself as newly opened
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+          ) : null}
+
           {/* Quick actions */}
           <section className="border-b border-line px-5 py-4">
             <div className="flex flex-wrap gap-2">

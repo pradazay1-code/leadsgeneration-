@@ -49,7 +49,14 @@ export type LeadUpsert = Omit<
   | "nextActionAt"
   | "lastContactedAt"
   | "doNotContact"
->;
+> & {
+  /**
+   * Every key this business matched on this run. `sourceId` is the strongest
+   * of them; the rest are recorded as aliases so a future scan that only
+   * learns one of them still resolves to this same lead.
+   */
+  identityKeys?: string[];
+};
 
 export interface UpsertResult {
   inserted: number;
@@ -185,4 +192,39 @@ export interface Store {
   getUsage(key: string, periodType: "month" | "day", period: string): Promise<number>;
   /** Record `count` calls against both the current month and day. */
   incrementUsage(key: string, count: number): Promise<void>;
+
+  /* --------------------------------------------------------- identities */
+  /**
+   * Map identity keys to the leads already holding them. The scan uses this to
+   * recognise a business it has seen before, even when this run matched it on
+   * a different key than last time.
+   */
+  resolveIdentities(keys: string[]): Promise<Map<string, string>>;
+
+  /* ------------------------------------------------------------ research */
+  /** URLs already researched, out of the given set. Keeps credits from being spent twice. */
+  seenResearchUrls(urls: string[]): Promise<Set<string>>;
+  /** Domains already researched, out of the given set. */
+  seenResearchDomains(domains: string[]): Promise<Set<string>>;
+  /** Record what a research attempt found, including the misses. */
+  recordResearch(entries: ResearchTargetInput[]): Promise<void>;
+  /** How many pages the agent has looked at, for the settings panel. */
+  researchStats(): Promise<{ total: number; converted: number }>;
+}
+
+/** Outcome of researching one page. */
+export type ResearchOutcome =
+  /** Produced a usable business record. */
+  | "lead"
+  /** Read fine, but wasn't a business we want (aggregator, wrong niche, franchise). */
+  | "rejected"
+  /** Couldn't be read at all. */
+  | "unreadable";
+
+export interface ResearchTargetInput {
+  url: string;
+  domain: string;
+  niche: string | null;
+  outcome: ResearchOutcome;
+  leadId?: string | null;
 }

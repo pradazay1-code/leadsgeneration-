@@ -148,6 +148,11 @@ export async function migrateCrm(sql: Sql): Promise<void> {
   await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_contacted_at timestamptz`;
   await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS do_not_contact boolean NOT NULL DEFAULT false`;
 
+  // Deep-research findings.
+  await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS owner_name text`;
+  await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS founded_year integer`;
+  await sql`ALTER TABLE leads ADD COLUMN IF NOT EXISTS looks_new boolean`;
+
   await sql`
     CREATE TABLE IF NOT EXISTS api_usage (
       quota_key   text NOT NULL,
@@ -157,6 +162,33 @@ export async function migrateCrm(sql: Sql): Promise<void> {
       updated_at  timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (quota_key, period_type, period)
     )`;
+
+  // Every identity key a lead has ever matched on. This is what makes dedupe
+  // survive between scans: a business first seen with only a name, later found
+  // with a phone number, resolves through its stored name key to the same row
+  // instead of arriving as a second copy.
+  await sql`
+    CREATE TABLE IF NOT EXISTS lead_identities (
+      identity_key text PRIMARY KEY,
+      lead_id      uuid NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS lead_identities_lead_idx ON lead_identities (lead_id)`;
+
+  // Pages the research agent has already looked at. Firecrawl credits are the
+  // scarcest budget in the app, so a URL is scraped at most once and the
+  // outcome is remembered — including the misses, which are the ones that
+  // would otherwise be retried forever.
+  await sql`
+    CREATE TABLE IF NOT EXISTS research_targets (
+      url          text PRIMARY KEY,
+      domain       text NOT NULL,
+      niche        text,
+      outcome      text NOT NULL,
+      lead_id      uuid REFERENCES leads(id) ON DELETE SET NULL,
+      researched_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS research_targets_domain_idx ON research_targets (domain)`;
 
   await sql`CREATE INDEX IF NOT EXISTS activities_lead_idx ON activities (lead_id, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS tasks_due_idx ON tasks (due_at) WHERE completed_at IS NULL`;

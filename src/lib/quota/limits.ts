@@ -9,6 +9,8 @@ export type QuotaKey =
   | "mapbox_search"
   | "mapbox_geocode"
   | "brave_search"
+  | "firecrawl_search"
+  | "firecrawl_scrape"
   | "geoapify_places"
   | "geoapify_geocode"
   | "yelp"
@@ -74,6 +76,34 @@ export const QUOTA_LIMITS: Record<QuotaKey, QuotaLimit> = {
     envMonthly: "BRAVE_MONTHLY_CAP",
     envDaily: "BRAVE_DAILY_CAP",
   },
+  firecrawl_search: {
+    key: "firecrawl_search",
+    label: "Firecrawl search",
+    freeTier: {
+      monthly: 500,
+      note: "Firecrawl bills in credits, not calls. A search costs about 1 credit per 10 results; the free allowance is 500 credits one-time, and paid plans start at 3,000/month.",
+    },
+    // Search and scrape draw on ONE credit pool, so their two caps are sized
+    // to sum to the free allowance rather than each fitting inside it
+    // separately. Raise both via env vars if you're on a paid plan.
+    cap: { monthly: 200, daily: 20 },
+    envMonthly: "FIRECRAWL_SEARCH_MONTHLY_CAP",
+    envDaily: "FIRECRAWL_SEARCH_DAILY_CAP",
+  },
+  firecrawl_scrape: {
+    key: "firecrawl_scrape",
+    label: "Firecrawl scrape + extract",
+    freeTier: {
+      monthly: 500,
+      note: "Shares the same credit pool as search. A plain scrape is ~1 credit; structured JSON extraction costs about 5, because an LLM reads the page.",
+    },
+    // Counted in credits rather than calls — the provider reserves 5 per
+    // extraction, so this number is a credit budget, not a request budget.
+    // 300 credits is roughly 60 enriched pages a month on the free plan.
+    cap: { monthly: 300, daily: 40 },
+    envMonthly: "FIRECRAWL_SCRAPE_MONTHLY_CAP",
+    envDaily: "FIRECRAWL_SCRAPE_DAILY_CAP",
+  },
   geoapify_places: {
     key: "geoapify_places",
     label: "Geoapify Places",
@@ -126,6 +156,7 @@ export const QUOTA_FOR_SOURCE: Partial<Record<SourceId, QuotaKey>> = {
   osm: "overpass",
   bizdata: "bizdata",
   web: "brave_search",
+  firecrawl: "firecrawl_search",
 };
 
 function envInt(name: string | undefined): number | undefined {

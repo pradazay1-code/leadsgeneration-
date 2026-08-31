@@ -95,6 +95,10 @@ export const SOURCE_META: Record<SourceId, { label: string; className: string }>
   geoapify: { label: "Geoapify", className: "border-violet-500/30 bg-violet-500/10 text-violet-300" },
   yelp: { label: "Yelp", className: "border-red-500/25 bg-red-500/10 text-red-300" },
   mapbox: { label: "Mapbox", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
+  firecrawl: {
+    label: "Research",
+    className: "border-amber-500/35 bg-amber-500/10 text-amber-300",
+  },
   web: { label: "Web", className: "border-orange-500/30 bg-orange-500/10 text-orange-300" },
   manual: { label: "Manual", className: "border-line-strong bg-surface-3 text-ink-3" },
 };

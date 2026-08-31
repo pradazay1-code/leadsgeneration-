@@ -1,13 +1,19 @@
 import type { SourceId, SourceRefs } from "./types";
 import { SOURCE_PRIORITY, type SourceRecord } from "./sources/types";
+import { groupByIdentity, identityKeysFor } from "./identity";
 
 /**
  * A business after cross-source merging: one row per real-world operator, with
  * evidence pooled from every platform that listed it.
  */
 export interface MergedBusiness {
-  /** Stable dedupe key — phone-based when possible, else name+city. */
+  /** Strongest key for this business — phone, else domain, else name+city. */
   identityKey: string;
+  /**
+   * Every key this business matched on. Storage records all of them, so a
+   * later scan that only learns one of them still finds the same row.
+   */
+  identityKeys: string[];
   /** Richest platform that saw this business (per SOURCE_PRIORITY). */
   primarySource: SourceId;
   sources: SourceId[];
@@ -33,28 +39,18 @@ export interface MergedBusiness {
   hasHours: boolean | null;
   businessStatus: string | null;
   categories: string[];
+
+  /** Owner or principal, when deep research found one. */
+  ownerName: string | null;
+  /** Year the business claims it started. */
+  foundedYear: number | null;
+  /** True when a source presented the business as newly launched. */
+  looksNew: boolean | null;
+  /** Which research angle surfaced it. */
+  researchAngle: string | null;
 }
 
-/** Last 10 digits of a US phone number, or null when it isn't one. */
-export function phoneKey(phone: string | null | undefined): string | null {
-  if (!phone) return null;
-  const digits = phone.replace(/\D/g, "");
-  const ten = digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
-  return ten.length === 10 ? ten : null;
-}
-
-const NAME_NOISE =
-  /\b(llc|inc|co|corp|company|ltd|the|of|and|&|services?|group|team)\b|[^a-z0-9 ]/g;
-
-export function nameCityKey(name: string, city: string | null): string {
-  const n = name.toLowerCase().replace(NAME_NOISE, " ").replace(/\s+/g, " ").trim();
-  return `${n}|${(city ?? "").toLowerCase().trim()}`;
-}
-
-export function identityKeyFor(rec: { phone: string | null; name: string; city: string | null }): string {
-  const p = phoneKey(rec.phone);
-  return p ? `p:${p}` : `n:${nameCityKey(rec.name, rec.city)}`;
-}
+export { phoneKey, nameCityKey, identityKeysFor } from "./identity";
 
 function priorityIndex(source: SourceId): number {
   const i = SOURCE_PRIORITY.indexOf(source);
@@ -73,36 +69,20 @@ function pick<T>(records: SourceRecord[], get: (r: SourceRecord) => T | null): T
 /**
  * Merge every source record for one territory×niche into per-business rows.
  *
- * Identity: same normalised phone number ⇒ same business; otherwise same
- * cleaned name + city. Businesses that changed numbers between platforms can
- * slip through as two rows — acceptable, they still dedupe on re-scans.
+ * Two records are the same business when they share *any* identity key — a
+ * phone number, a website domain, or a name+city. Matching is transitive, so a
+ * map listing with only a phone and a directory hit with only a domain still
+ * collapse into one row as long as something in between links them.
  */
 export function mergeRecords(records: SourceRecord[]): MergedBusiness[] {
-  const groups = new Map<string, SourceRecord[]>();
-  // Secondary index so a phone-less record can still join a phone-keyed group
-  // when the name+city matches.
-  const nameIndex = new Map<string, string>();
-
-  for (const rec of records) {
-    const pKey = phoneKey(rec.phone);
-    const nKey = nameCityKey(rec.name, rec.city);
-    let key: string;
-
-    if (pKey) {
-      key = `p:${pKey}`;
-      if (!nameIndex.has(nKey)) nameIndex.set(nKey, key);
-    } else {
-      key = nameIndex.get(nKey) ?? `n:${nKey}`;
-    }
-
-    const group = groups.get(key);
-    if (group) group.push(rec);
-    else groups.set(key, [rec]);
-  }
+  const grouped = groupByIdentity(records, (r) =>
+    identityKeysFor({ name: r.name, phone: r.phone, city: r.city, website: r.website }),
+  );
 
   const out: MergedBusiness[] = [];
-  for (const [identityKey, group] of groups) {
+  for (const { keys, items: group } of grouped) {
     group.sort((a, b) => priorityIndex(a.source) - priorityIndex(b.source));
+    const identityKey = keys[0];
 
     const sources = [...new Set(group.map((r) => r.source))];
     const sourceRefs: SourceRefs = {};
@@ -133,6 +113,7 @@ export function mergeRecords(records: SourceRecord[]): MergedBusiness[] {
 
     out.push({
       identityKey,
+      identityKeys: keys,
       primarySource: group[0].source,
       sources,
       sourceRefs,
@@ -153,6 +134,16 @@ export function mergeRecords(records: SourceRecord[]): MergedBusiness[] {
       hasHours: hoursKnown.length ? hoursKnown.some(Boolean) : null,
       businessStatus: pick(group, (r) => r.businessStatus),
       categories: [...new Set(group.flatMap((r) => r.categories))],
+      ownerName: pick(group, (r) => r.ownerName ?? null),
+      foundedYear: pick(group, (r) => r.foundedYear ?? null),
+      // Any source saying "new" is worth keeping; only treat it as settled
+      // false when a source looked and said so.
+      looksNew: group.some((r) => r.looksNew === true)
+        ? true
+        : group.some((r) => r.looksNew === false)
+          ? false
+          : null,
+      researchAngle: pick(group, (r) => r.researchAngle ?? null),
     });
   }
 

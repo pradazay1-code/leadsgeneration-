@@ -20,8 +20,9 @@ web-research pass, plus free supplements.
 
 | Source | Cost | What it does |
 |---|---|---|
-| **Mapbox Search Box** | Free: 25,000 searches/month | **Your main source.** Free-text POI search returning phone + website. Also powers the geocoder every radius search needs. |
-| **Brave Search** | Free: 2,000 queries/month | **Deep web research.** Finds businesses no map contains, and confirms a business genuinely has no website. |
+| **Mapbox Search Box** | Free: 25,000 searches/month | **Your map layer.** Free-text POI search returning phone + website. Also powers the geocoder every radius search needs. |
+| **Firecrawl** | Free: 500 credits, then paid | **The deep research agent.** Finds businesses no map contains, and the only source that returns **owner names**. |
+| **Brave Search** | Free: 2,000 queries/month | Cheap web verification — confirms a business genuinely has no website. |
 | Geoapify | Free: 3,000/day | Backup geocoder + an OSM-derived place source. |
 | BizData | Free, no key | Real-estate only, thin OSM coverage. Supplement. |
 | OpenStreetMap Overpass | Free, no key | Few US service businesses are mapped. Supplement. |
@@ -44,7 +45,31 @@ Two things make Mapbox the right primary. Its search is *free-text* — the app 
 website when it knows of one, so **"no website" from Mapbox is evidence, not a gap** —
 which is the heaviest single signal in the score.
 
-### Brave Search — the research pass
+### Firecrawl — the deep research agent
+
+1. [firecrawl.dev](https://firecrawl.dev) → dashboard → API keys (starts with `fc-`).
+2. Add it as `FIRECRAWL_API_KEY` and redeploy.
+
+This is the part that finds the businesses nobody else is calling. A plain search for
+"junk removal Norwood MA" returns the same ten established companies every time — the
+ones with an SEO budget, which is exactly the wrong end of the market. So the agent
+searches from six angles per territory instead:
+
+| Angle | What it catches |
+|---|---|
+| Launch language — *"now open"*, *"just launched"* | Businesses in their first months |
+| `site:facebook.com` | Operators whose only presence is a Facebook page |
+| Independent sites, portals excluded | Real businesses buried under Yelp and Angi |
+| Pages published in the last month | Write-ups and listings too new to rank |
+| Adjacent service terms | Operators who describe themselves differently |
+| Hiring posts | Businesses trading and growing with no website at all |
+
+Then, **before spending anything**, it discards every result that is already one of your
+leads, already researched in a previous run, or a directory/franchise page. Only the
+survivors get read — and that read is what pulls **owner name, email, phone and founding
+year** off the business's own site.
+
+### Brave Search — cheap verification
 
 1. [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com/app/keys) →
    free "Data for Search" plan → create a key.
@@ -53,6 +78,30 @@ which is the heaviest single signal in the score.
 Map data can only ever tell you "no website *in my dataset*". A web search tells you
 whether one exists at all. That's the difference between a guess and a qualified lead, so
 the scarce 2,000/month budget is spent on verification first and bulk discovery second.
+
+## Why you don't get the same leads twice
+
+Two mechanisms, and they solve different halves of the problem.
+
+**Identity.** A business doesn't have one key, it has several — phone number, website
+domain, and name+city. Any shared key means the same business, and matching is
+*transitive*: a map listing with only a phone, a research hit with that phone and a
+domain, and a directory entry with only that domain all collapse into one lead. Every key
+a lead has ever matched on is stored, so a hauler found this week under just a name and
+next week with a phone number lands on the same row instead of arriving as a fresh lead.
+
+Shared hosts are never identities — two businesses both having a Facebook page doesn't
+make them one business.
+
+The known limit: a business that changes its trading name *and* has no phone or domain in
+common between the two sightings won't be matched. Matching on name similarity alone
+would risk merging two genuinely different local operators, which loses a real lead
+silently — a worse failure than showing you a duplicate.
+
+**The research registry.** Every URL the agent looks at is recorded with its outcome,
+including the rejections. A page is never read twice, and the dead ends stay dead. The
+scan banner shows the funnel — how many results were skipped as already yours, already
+researched, or directory noise — so you can see the filtering working.
 
 ### Yelp is off on purpose
 
@@ -71,6 +120,10 @@ and sail past the cap together.
 
 - Caps default to about **80% of each vendor's free tier**, leaving headroom for calls the
   vendor counts but this app never sees (retries, redirects).
+- Firecrawl is metered in **credits, not calls** — a search is ~1, an extraction ~5 — and
+  its search and scrape budgets draw on one shared pool, so their two caps are sized to
+  *sum* to the free 500 rather than each fitting under it separately. On a paid plan,
+  raise both together.
 - Both a **monthly** and a **daily** ceiling apply, so one runaway day can't eat the month.
 - Hitting a cap **pauses that one source** for the rest of the period. The scan carries on
   with whatever still has budget and tells you which source was paused and why — it does
@@ -87,8 +140,8 @@ The enforcement logic is covered by tests: `npm test`.
    injected automatically. **Without this, scanned leads vanish**: serverless requests
    hit different machines, so in-memory leads disappear the moment you reload. The API
    usage counters live here too, so the spend caps also need it to hold across requests.
-3. **Add `MAPBOX_ACCESS_TOKEN`** and **`BRAVE_API_KEY`** (see above). Optionally
-   `GEOAPIFY_API_KEY`.
+3. **Add `MAPBOX_ACCESS_TOKEN`**, **`FIRECRAWL_API_KEY`** and **`BRAVE_API_KEY`** (see
+   above). Optionally `GEOAPIFY_API_KEY`.
 4. **Redeploy.**
 5. Open **Settings → System check**. It runs a live test query against every source and
    tells you what's still broken and how to fix it. Everything should read *Working*.
@@ -149,6 +202,8 @@ owner-operators, and a fast-track for leads with no website at all.
 - **System check** — live probe of database, territories, geocoder, and every source.
 - **API usage** — live counters against every free-tier cap, with reset dates, so you can
   see exactly how much budget a scan spent before it spends any more.
+- **Owner details** — where deep research found them: owner or principal's name, direct
+  email, and the year the business started, shown on the lead's drawer.
 
 ## Local development
 
@@ -166,7 +221,11 @@ blocklists in [`src/lib/niches.ts`](src/lib/niches.ts), cross-source merging in
 
 | Signal | Points |
 |---|---|
-| No website found by a source that would know — Mapbox or web search (confirmed) | +30 |
+| No website found by a source that would know — Mapbox, research or web search | +30 |
+| Started trading this year or last (stated on their own site) | +26 |
+| Started trading within 3 years | +16 |
+| Describes itself as newly opened / just launched | +18 |
+| Trading 12+ years — long established | −18 |
 | No website found on any source checked | +22 |
 | Only a Facebook/Linktree/free-builder page | +22 |
 | Only a brokerage/portal profile (kw.com, realtor.com, …) | +18 |

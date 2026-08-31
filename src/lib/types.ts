@@ -3,6 +3,7 @@ export type NicheId = "junk_removal" | "real_estate";
 /** Where a lead's data can come from. */
 export type SourceId =
   | "mapbox"
+  | "firecrawl"
   | "web"
   | "bizdata"
   | "osm"
@@ -108,6 +109,16 @@ export interface Lead {
   /** Normalised category strings from every source. */
   categories: string[];
 
+  /**
+   * Owner, founder or principal agent, when deep research found one named on
+   * the business's own site. The single most useful field on a cold call.
+   */
+  ownerName: string | null;
+  /** Year the business says it started, when it says so publicly. */
+  foundedYear: number | null;
+  /** True when a source presented the business as newly launched. */
+  looksNew: boolean | null;
+
   score: number;
   tier: PresenceTier;
   signals: ScoreSignal[];
@@ -211,6 +222,20 @@ export interface ScanRunSummary {
   rejectionCounts: Record<string, number>;
   /** True when no source could run at all. */
   noSourcesConfigured: boolean;
+  /**
+   * Deep-research funnel for the run, when research ran. The skip counts are
+   * the interesting part: they say how much work was avoided because the
+   * business or the page had already been seen.
+   */
+  research?: {
+    queriesRun: number;
+    hitsSeen: number;
+    skippedAlreadyResearched: number;
+    skippedKnownBusiness: number;
+    skippedAggregator: number;
+    pagesEnriched: number;
+    newBusinessHits: number;
+  };
 }
 
 export interface LeadFilters {
