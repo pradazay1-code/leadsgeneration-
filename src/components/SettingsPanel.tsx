@@ -9,6 +9,7 @@ import {
   KeyRound,
   Map,
   RefreshCw,
+  Search,
   Star,
   XCircle,
 } from "lucide-react";
@@ -29,6 +30,12 @@ interface StatsResponse {
   providers: ProviderStatus[];
   quotas: QuotaState[];
   storeKind: string;
+  build?: {
+    sha: string | null;
+    branch: string | null;
+    env: string | null;
+    message: string | null;
+  };
 }
 
 const PROVIDER_ICONS: Record<string, LucideIcon> = {
@@ -37,6 +44,7 @@ const PROVIDER_ICONS: Record<string, LucideIcon> = {
   geoapify: Map,
   yelp: Star,
   mapbox: Map,
+  firecrawl: Search,
   web: Globe,
 };
 
@@ -161,6 +169,28 @@ export function SettingsPanel() {
               Overpass. Yelp data © Yelp — each lead links back to its Yelp page.
             </p>
           </div>
+
+          {/* Which commit is actually serving this page. If a source you
+              expect is missing from the list above, check here first: the
+              deployment is often simply older than the feature. */}
+          {meta?.build?.sha ? (
+            <div className="border-t border-line bg-surface-2 px-4 py-2.5">
+              <p className="font-mono text-[10px] leading-relaxed text-ink-3">
+                Running{" "}
+                <span className="text-ink-2">{meta.build.sha}</span>
+                {meta.build.branch ? (
+                  <>
+                    {" "}
+                    on <span className="text-ink-2">{meta.build.branch}</span>
+                  </>
+                ) : null}
+                {meta.build.env ? ` · ${meta.build.env}` : null}
+                {meta.build.message ? (
+                  <span className="block truncate text-ink-3">{meta.build.message}</span>
+                ) : null}
+              </p>
+            </div>
+          ) : null}
         </section>
 
         {/* Storage + schedule */}

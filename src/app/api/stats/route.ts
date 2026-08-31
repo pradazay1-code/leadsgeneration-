@@ -3,6 +3,7 @@ import { getStore } from "@/lib/db";
 import { providerStatuses } from "@/lib/sources";
 import { senderStatuses } from "@/lib/outreach/providers";
 import { allQuotas } from "@/lib/quota";
+import { buildInfo } from "@/lib/build-info";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ export async function GET() {
       senders: senderStatuses(),
       quotas,
       storeKind: store.kind,
+      build: buildInfo(),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load stats";
