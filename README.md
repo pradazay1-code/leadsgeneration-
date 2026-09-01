@@ -136,8 +136,14 @@ Enforcement is covered by tests, including the concurrency case: `npm test`.
 ## Tests
 
 ```bash
-npm test     # 95 tests, no dependencies beyond Node
+npm test     # 122 tests, no dependencies beyond Node
 ```
+
+`tests/provider-contracts.test.ts` intercepts `fetch` and asserts the exact URL,
+method, auth header and parameter names each provider builds against what the vendor
+documents. It can't prove a vendor accepts the request, but it catches the failure that
+has actually bitten this project: a correctly-formed request sent to the wrong parameter
+name, which comes back empty and looks identical to "there are no businesses here".
 
 `tests/scan.e2e.test.ts` drives the **real** `runScan` against the **real** store —
 merging, identity, scoring, franchise rejection, quota benching, persistence and re-scan
@@ -161,6 +167,10 @@ modules rather than a copy of them.
 4. **Redeploy.**
 5. Open **Settings → System check**. It runs a live test query against every source and
    tells you what's still broken and how to fix it. Everything should read *Working*.
+   It also lists which env var names the running app can actually see, and shows a
+   redacted sample of what each provider returned — a source that comes back empty is
+   otherwise indistinguishable from one being parsed wrongly. **Copy report** puts all
+   of it on the clipboard, with API keys stripped, for sharing when something's wrong.
 6. Add a territory ("Norwood, MA"), hit **Scan now**.
 
 Other env vars: `CRON_SECRET` (locks the daily scan endpoint — `openssl rand -hex 32`),

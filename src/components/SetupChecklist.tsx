@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   CircleDashed,
+  ClipboardCopy,
   RefreshCw,
   Stethoscope,
   XCircle,
@@ -48,6 +49,63 @@ export interface DiagnosticsReport {
     env: string | null;
     message: string | null;
   };
+  samples?: Array<{ source: string; url: string; status: number; sample: string }>;
+}
+
+/**
+ * Flatten the report into pasteable text.
+ *
+ * These APIs are only reachable from the deployment, so a problem can't be
+ * reproduced anywhere else — the fastest path to a fix is handing over exactly
+ * what the running app saw. Values are already redacted server-side; the
+ * response samples are truncated there too.
+ */
+function reportToText(report: DiagnosticsReport): string {
+  const lines: string[] = [];
+  const rule = "─".repeat(56);
+
+  lines.push("LEADSIGNAL DIAGNOSTIC REPORT");
+  lines.push(`Generated: ${report.ranAt}`);
+  if (report.build?.sha) {
+    lines.push(
+      `Build:     ${report.build.sha} on ${report.build.branch ?? "?"} (${report.build.env ?? "?"})`,
+    );
+  }
+  lines.push(`Probe area: ${report.probeArea}`);
+  lines.push(`Can find leads: ${report.canFindLeads ? "yes" : "NO"}`);
+
+  lines.push("", rule, "CHECKS", rule);
+  for (const c of report.checks) {
+    lines.push(`[${c.status.toUpperCase()}] ${c.label}${c.ms !== undefined ? ` (${c.ms}ms)` : ""}`);
+    lines.push(`      ${c.detail}`);
+    if (c.fix) lines.push(`      fix: ${c.fix}`);
+  }
+
+  if (report.env) {
+    lines.push("", rule, "ENVIRONMENT", rule);
+    lines.push(`Running on Vercel: ${report.env.onVercel ? "yes" : "no"}`);
+    for (const v of report.env.vars) {
+      const state = v.present
+        ? `set (${v.length} chars${v.foundAs !== v.name ? `, as ${v.foundAs}` : ""})`
+        : `NOT SET${v.required ? " — required" : ""}`;
+      lines.push(`${v.name}: ${state}`);
+      for (const p of v.problems) lines.push(`      ! ${p}`);
+    }
+    for (const t of report.env.possibleTypos) {
+      lines.push(`${t.found}: set, but nothing reads it — did you mean ${t.didYouMean}?`);
+    }
+  }
+
+  if (report.samples?.length) {
+    lines.push("", rule, "RAW RESPONSES (redacted, truncated)", rule);
+    for (const s of report.samples) {
+      lines.push(`--- ${s.source} → ${s.status} ${s.url}`);
+      lines.push(s.sample);
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
 }
 
 const STATUS_META = {
@@ -92,6 +150,7 @@ export function SetupChecklist({ compact = false }: { compact?: boolean }) {
   const [report, setReport] = useState<DiagnosticsReport | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const run = useCallback(async () => {
     setRunning(true);
@@ -134,10 +193,31 @@ export function SetupChecklist({ compact = false }: { compact?: boolean }) {
             </span>
           ) : null}
         </div>
-        <Button size="sm" variant="subtle" onClick={run} disabled={running}>
-          {running ? <Spinner /> : <RefreshCw className="size-3.5" />}
-          {running ? "Testing…" : "Re-test"}
-        </Button>
+        <div className="flex items-center gap-2">
+          {report ? (
+            <Button
+              size="sm"
+              variant="subtle"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(reportToText(report));
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                } catch {
+                  setCopied(false);
+                }
+              }}
+              title="Everything needed to debug this remotely. API keys are redacted."
+            >
+              {copied ? <CheckCircle2 className="size-3.5" /> : <ClipboardCopy className="size-3.5" />}
+              {copied ? "Copied" : "Copy report"}
+            </Button>
+          ) : null}
+          <Button size="sm" variant="subtle" onClick={run} disabled={running}>
+            {running ? <Spinner /> : <RefreshCw className="size-3.5" />}
+            {running ? "Testing…" : "Re-test"}
+          </Button>
+        </div>
       </header>
 
       {running && !report ? (

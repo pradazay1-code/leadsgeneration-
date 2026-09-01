@@ -134,6 +134,60 @@ export const SOURCE_LABELS: Record<SourceId, string> = {
 };
 
 /**
+ * Optional recorder for raw provider responses, used by the System check.
+ *
+ * When a provider returns zero results there is no way to tell a genuinely
+ * empty area from a parsing mistake without seeing what actually came back.
+ * The app can't be debugged from the outside — the APIs are only reachable
+ * from the deployment — so it has to be able to show its working.
+ *
+ * Off by default; diagnostics turns it on for the duration of its probes.
+ */
+interface ResponseCapture {
+  source: SourceId;
+  url: string;
+  status: number;
+  /** Truncated, redacted response body. */
+  sample: string;
+}
+
+let captureSink: ResponseCapture[] | null = null;
+
+export function startResponseCapture(): ResponseCapture[] {
+  captureSink = [];
+  return captureSink;
+}
+
+export function stopResponseCapture(): void {
+  captureSink = null;
+}
+
+/**
+ * Strip anything that could be a credential before a response sample is shown
+ * or copied. Mapbox puts the token in the query string, so URLs are the main
+ * risk; tokens can also be echoed back in error messages.
+ */
+export function redact(text: string): string {
+  return text
+    .replace(/([?&](?:access_token|apiKey|api_key|key|token|apikey)=)[^&\s"']+/gi, "$1REDACTED")
+    .replace(/\b(pk|sk)\.[A-Za-z0-9._-]{8,}/g, "$1.REDACTED")
+    .replace(/\bfc-[A-Za-z0-9._-]{8,}/g, "fc-REDACTED")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._-]{8,}/gi, "$1REDACTED");
+}
+
+function recordResponse(source: SourceId, url: string, status: number, body: string): void {
+  if (!captureSink) return;
+  captureSink.push({
+    source,
+    url: redact(url.split("?")[0]),
+    status,
+    // Enough to see the response shape and the first record, not so much that
+    // it becomes unreadable or drags personal data around.
+    sample: redact(body.slice(0, 1200)),
+  });
+}
+
+/**
  * Statuses worth trying again. A 429 or a 5xx is the upstream having a moment,
  * not a verdict — but without a retry a single blip benched the source for the
  * whole run, losing every result it would have returned. 401/403/404 are
@@ -224,6 +278,7 @@ async function attemptFetch<T>(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      recordResponse(source, url, res.status, text);
       const error = new SourceError(
         `${source} request failed (${res.status}): ${text.slice(0, 200)}`,
         source,
@@ -231,6 +286,15 @@ async function attemptFetch<T>(
       );
       error.retryAfterMs = retryAfterMs(res);
       throw error;
+    }
+
+    // Read as text so a successful response can be sampled, then parse. The
+    // extra parse is cheap next to the round trip, and only happens at all
+    // when the System check has capture switched on.
+    if (captureSink) {
+      const text = await res.text();
+      recordResponse(source, url, res.status, text);
+      return JSON.parse(text) as T;
     }
     return (await res.json()) as T;
   } catch (err) {

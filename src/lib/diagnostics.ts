@@ -5,6 +5,7 @@ import { geocodeArea, type GeoPoint } from "./sources/geocode";
 import { ALL_PROVIDERS } from "./sources";
 import { QuotaExceededError } from "./quota";
 import { firecrawlConfigured, search as firecrawlSearch } from "./research/firecrawl";
+import { startResponseCapture, stopResponseCapture } from "./sources/types";
 import { envReport, type EnvReport } from "./env-check";
 import { buildInfo, type BuildInfo } from "./build-info";
 import type { SourceId } from "./types";
@@ -32,6 +33,12 @@ export interface DiagnosticsReport {
   env: EnvReport;
   /** The commit serving this deployment. */
   build: BuildInfo;
+  /**
+   * Redacted samples of what each provider actually returned. A source that
+   * comes back empty is otherwise indistinguishable from one being parsed
+   * wrongly, and these APIs are only reachable from the deployment itself.
+   */
+  samples: Array<{ source: string; url: string; status: number; sample: string }>;
 }
 
 const GEOCODER_LABELS: Record<GeoPoint["via"], string> = {
@@ -86,6 +93,22 @@ function explain(source: SourceId, message: string): string {
  */
 export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<DiagnosticsReport> {
   const checks: CheckResult[] = [];
+  // Record what each provider actually sends back for the duration of the
+  // probes. Always stopped in the finally below, so a normal scan never pays
+  // the cost of it.
+  const samples = startResponseCapture();
+  try {
+    return await probeEverything(probeArea, checks, samples);
+  } finally {
+    stopResponseCapture();
+  }
+}
+
+async function probeEverything(
+  probeArea: string,
+  checks: CheckResult[],
+  samples: Array<{ source: string; url: string; status: number; sample: string }>,
+): Promise<DiagnosticsReport> {
 
   /* ---------------------------------------------------------- storage --- */
   const store = await getStore();
@@ -281,5 +304,6 @@ export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<Diagnos
     canFindLeads: anySourceWorked,
     env: envReport(),
     build: buildInfo(),
+    samples,
   };
 }
