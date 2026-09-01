@@ -338,6 +338,9 @@ export function LeadsWorkspace() {
                   `${scanResult.research.newBusinessHits} look brand new`,
                 ].join("  ·  ")
               : null,
+            scanResult.websiteChecks
+              ? `Website checks: ${scanResult.websiteChecks} businesses confirmed as having no site of their own`
+              : null,
           ]
             .filter(Boolean)
             .join("\n")}

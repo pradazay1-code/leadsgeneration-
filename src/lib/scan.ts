@@ -4,6 +4,8 @@ import type { LeadUpsert } from "./db/store";
 import { mergeRecords, type MergedBusiness } from "./merge";
 import { geocodeArea } from "./sources/geocode";
 import { SourceError, configuredProviders, type SourceProvider, type SourceRecord } from "./sources";
+import { WEBSITE_AUTHORITATIVE } from "./sources/types";
+import { verifyWebsite } from "./sources/web";
 import {
   runResearch,
   type ResearchContext,
@@ -14,6 +16,7 @@ import { firecrawlConfigured } from "./research/firecrawl";
 import { QuotaExceededError } from "./quota";
 import { normaliseHost, scoreBusiness } from "./scoring";
 import { scopeIdentityKeys } from "./identity";
+import { withinTerritory } from "./geo";
 import type {
   NicheId,
   ScanCandidate,
@@ -42,6 +45,15 @@ const DEFAULT_BUDGET_MS = 45_000;
  * sub-budget rather than being allowed to eat the whole scan.
  */
 const RESEARCH_SLICE_MS = 20_000;
+
+/**
+ * Website-existence checks allowed per run.
+ *
+ * Each is one Brave query, from a 2,000/month free tier, and each costs about
+ * a second of a 45-second budget. Small on purpose: it only runs for
+ * businesses no authoritative source saw, which is a minority.
+ */
+const WEBSITE_CHECKS_PER_RUN = 8;
 
 export interface ScanOptions {
   /** Restrict the run to specific territories. Defaults to every enabled one. */
@@ -213,10 +225,21 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   const perSourceLimit = options.perSourceLimit ?? 60;
 
   const all = await store.listTerritories();
-  const targets: Territory[] = all.filter((t) => {
-    if (options.territoryIds?.length) return options.territoryIds.includes(t.id);
-    return t.enabled;
-  });
+  const targets: Territory[] = all
+    .filter((t) => {
+      if (options.territoryIds?.length) return options.territoryIds.includes(t.id);
+      return t.enabled;
+    })
+    // Least recently scanned first. A run stops when the time budget is spent,
+    // so a fixed order means whatever sits at the end of the list is never
+    // reached — not "scanned less often", never scanned at all. Rotating means
+    // consecutive daily runs cover every territory in turn.
+    .sort((a, b) => {
+      if (options.territoryIds?.length) return 0; // Respect an explicit request.
+      const at = a.lastScannedAt ? Date.parse(a.lastScannedAt) : 0;
+      const bt = b.lastScannedAt ? Date.parse(b.lastScannedAt) : 0;
+      return at - bt;
+    });
 
   if (!targets.length) {
     const summary: ScanRunSummary = {
@@ -242,6 +265,10 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   const benched = new Set<SourceId>();
   const sourcesUsed = new Set<SourceId>();
   const researchEnabled = Boolean(options.research) || firecrawlConfigured();
+  /** Territories this run actually reached before the budget ran out. */
+  const visited = new Set<string>();
+  let websiteChecksLeft = WEBSITE_CHECKS_PER_RUN;
+  let websiteChecks = 0;
   const researchStats: ResearchStats[] = [];
   let placesInspected = 0;
   let skipped = 0;
@@ -260,6 +287,9 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
 
   outer: for (const territory of targets) {
     let terr = territory;
+    // Recorded before the work rather than after, so a territory that is cut
+    // off mid-way still counts as visited and the rotation moves on next run.
+    visited.add(terr.id);
 
     // Only geocode if a provider that needs coordinates is actually going to
     // run. Yelp and the web search take a plain place name, so on a run using
@@ -287,53 +317,68 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
       const records: SourceRecord[] = [];
       const checkedSources: SourceId[] = [];
 
-      for (const provider of providers) {
-        if (Date.now() > deadline) {
-          ranOutOfTime = true;
-          break outer;
-        }
-        if (benched.has(provider.id)) continue;
-        if (!provider.supportsNiche(niche)) {
-          tally.skip(provider.id, `Doesn't cover the ${niche.replace("_", " ")} niche`);
-          continue;
-        }
+      if (Date.now() > deadline) {
+        ranOutOfTime = true;
+        break outer;
+      }
 
+      const runnable = providers.filter((p) => {
+        if (benched.has(p.id)) return false;
+        if (!p.supportsNiche(niche)) {
+          tally.skip(p.id, `Doesn't cover the ${niche.replace("_", " ")} niche`);
+          return false;
+        }
+        return true;
+      });
+
+      // Sources are queried concurrently. They're independent services, so
+      // running them one after another made a territory cost the *sum* of six
+      // round trips instead of the slowest one — which on a 45-second
+      // serverless budget is the difference between covering every territory
+      // and covering the first two. Per-provider rate limits are unaffected:
+      // each provider still paces its own internal calls.
+      const settled = await Promise.allSettled(
+        runnable.map((p) => p.search({ niche, territory: terr, limit: perSourceLimit })),
+      );
+
+      // Results are folded in provider order, not completion order, so the
+      // merge and the report stay deterministic regardless of network timing.
+      settled.forEach((outcome, i) => {
+        const provider = runnable[i];
         const stat = tally.get(provider.id);
         stat.queries += 1;
 
-        try {
-          const found = await provider.search({
-            niche,
-            territory: terr,
-            limit: perSourceLimit,
-          });
+        if (outcome.status === "fulfilled") {
+          const found = outcome.value;
           checkedSources.push(provider.id);
           stat.returned += found.length;
           if (found.length > 0) sourcesUsed.add(provider.id);
           records.push(...found);
           placesInspected += found.length;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-
-          // A quota block is expected behaviour, not a fault: bench the
-          // provider quietly for the rest of the run and say why.
-          if (err instanceof QuotaExceededError) {
-            benched.add(provider.id);
-            stat.skipped = stat.queries === 1;
-            stat.skipReason = message;
-            stat.errors.push(message);
-            errors.push(`${provider.label} paused — ${message}`);
-            continue;
-          }
-
-          stat.errors.push(`${terr.label} / ${niche}: ${message}`);
-          errors.push(`${provider.label} — ${message}`);
-          if (err instanceof SourceError && err.fatal) {
-            benched.add(provider.id);
-            stat.errors.push("Benched for the rest of this run (auth failure).");
-          }
+          return;
         }
-      }
+
+        const err = outcome.reason;
+        const message = err instanceof Error ? err.message : String(err);
+
+        // A quota block is expected behaviour, not a fault: bench the
+        // provider quietly for the rest of the run and say why.
+        if (err instanceof QuotaExceededError) {
+          benched.add(provider.id);
+          stat.skipped = stat.queries === 1;
+          stat.skipReason = message;
+          stat.errors.push(message);
+          errors.push(`${provider.label} paused — ${message}`);
+          return;
+        }
+
+        stat.errors.push(`${terr.label} / ${niche}: ${message}`);
+        errors.push(`${provider.label} — ${message}`);
+        if (err instanceof SourceError && err.fatal) {
+          benched.add(provider.id);
+          stat.errors.push("Benched for the rest of this run (auth failure).");
+        }
+      });
 
       // ---- Deep research -------------------------------------------------
       // Runs after the map sources so it can see what they already found, and
@@ -372,15 +417,60 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
         }
       }
 
-      for (const merged of mergeRecords(records)) {
-        const { upsert, reason } = toUpsert(merged, niche, checkedSources, terr.id, now);
+      const merged = mergeRecords(records);
+
+      // ---- Website verification ------------------------------------------
+      // Only for businesses no authoritative source saw. Those score +22 for
+      // "no website found on the sources checked" rather than +30 for a
+      // confirmed absence — a real difference, since website absence is the
+      // heaviest signal and the whole pitch. One cheap search settles it.
+      // Strictly budgeted: this is the scarcest API in the system.
+      if (websiteChecksLeft > 0 && Date.now() < deadline) {
+        const unverified = merged.filter(
+          (b) => !b.website && !b.sources.some((s) => WEBSITE_AUTHORITATIVE.includes(s)),
+        );
+        for (const biz of unverified) {
+          if (websiteChecksLeft <= 0 || Date.now() > deadline) break;
+          websiteChecksLeft -= 1;
+          const verdict = await verifyWebsite(biz.name, biz.city);
+          if (!verdict) continue; // No key or no budget — leave it unverified.
+          websiteChecks += 1;
+          if (verdict.found && verdict.url) {
+            biz.website = verdict.url;
+          }
+          // Either way the question was actually asked, so the scorer may now
+          // treat the answer as evidence rather than a gap in the data.
+          biz.sources = [...biz.sources, "web"];
+          if (!checkedSources.includes("web")) checkedSources.push("web");
+        }
+      }
+
+      for (const business of merged) {
+        // Mapbox's proximity only biases results and the research queries are
+        // plain text, so neither guarantees the business is actually near the
+        // territory. Checked here rather than per-provider so every source is
+        // held to the same boundary.
+        const where = withinTerritory(terr, business, terr.label);
+        if (!where.inRange) {
+          skipped += 1;
+          note({
+            name: business.name,
+            city: business.city,
+            sources: business.sources,
+            score: 0,
+            outcome: where.reason ?? "Outside the territory",
+          });
+          continue;
+        }
+
+        const { upsert, reason } = toUpsert(business, niche, checkedSources, terr.id, now);
 
         if (!upsert) {
           skipped += 1;
           note({
-            name: merged.name,
-            city: merged.city,
-            sources: merged.sources,
+            name: business.name,
+            city: business.city,
+            sources: business.sources,
             score: 0,
             outcome: reason ?? "Disqualified",
           });
@@ -389,18 +479,18 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
         if (upsert.score < minScore) {
           skipped += 1;
           note({
-            name: merged.name,
-            city: merged.city,
-            sources: merged.sources,
+            name: business.name,
+            city: business.city,
+            sources: business.sources,
             score: upsert.score,
             outcome: `Scored ${upsert.score}, below the ${minScore} cutoff — too established`,
           });
           continue;
         }
         note({
-          name: merged.name,
-          city: merged.city,
-          sources: merged.sources,
+          name: business.name,
+          city: business.city,
+          sources: business.sources,
           score: upsert.score,
           outcome: "kept",
         });
@@ -440,7 +530,10 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   await Promise.all(
     targets.map((t) =>
       store.updateTerritory(t.id, {
-        lastScannedAt: now,
+        // Only stamp territories the run actually reached. Stamping the ones
+        // it never got to would make them look freshly scanned and push them
+        // to the back of the rotation, so they'd stay unscanned forever.
+        ...(visited.has(t.id) ? { lastScannedAt: now } : {}),
         leadsFound: leadCounts.get(t.id) ?? 0,
       }),
     ),
@@ -473,6 +566,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     rejectionCounts,
     noSourcesConfigured: false,
     research: researchStats.length ? sumResearch(researchStats) : undefined,
+    websiteChecks,
   };
 
   await store.recordScan(summary);

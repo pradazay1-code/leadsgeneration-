@@ -312,6 +312,196 @@ describe("runScan end to end", () => {
   });
 });
 
+describe("source concurrency", () => {
+  /** A provider that takes a fixed time to answer. */
+  function slowProvider(id: SourceProvider["id"], ms: number, records: SourceRecord[]) {
+    return {
+      ...fakeProvider(id, records),
+      async search() {
+        await new Promise((r) => setTimeout(r, ms));
+        return records.map((r) => ({ ...r, source: id }));
+      },
+    } as SourceProvider;
+  }
+
+  it("queries sources concurrently rather than one after another", async () => {
+    // Sequentially this is 300ms; concurrently it is ~100ms. On a 45-second
+    // serverless budget that difference decides how many territories a run
+    // can cover before it is cut off.
+    await freshStore();
+    const started = Date.now();
+    await runScan({
+      providers: [
+        slowProvider("mapbox", 100, [NEW_HAULER]),
+        slowProvider("geoapify", 100, []),
+        slowProvider("bizdata", 100, []),
+      ],
+    });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 250, `three 100ms sources should overlap; took ${elapsed}ms`);
+  });
+
+  it("folds results in provider order regardless of who answers first", async () => {
+    // Merge order decides which source wins a field conflict, so it must not
+    // depend on network timing.
+    const store = await freshStore();
+    const run = async () =>
+      runScan({
+        minScore: 0,
+        providers: [
+          // Mapbox outranks geoapify in SOURCE_PRIORITY but answers last here.
+          slowProvider("mapbox", 60, [
+            record({ name: "Acme Junk", phone: "617-555-1234", address: "1 Mapbox Way" }),
+          ]),
+          slowProvider("geoapify", 5, [
+            record({ name: "Acme Junk", phone: "617-555-1234", address: "9 Geoapify Road" }),
+          ]),
+        ],
+      });
+
+    await run();
+    const first = (await store.listLeads({})).rows[0];
+    assert.equal(first.address, "1 Mapbox Way", "the higher-priority source must win");
+
+    // And again, to be sure it isn't a fluke of one run's timing.
+    await freshStore();
+    await run();
+    assert.equal((await store.listLeads({})).rows[0].address, "1 Mapbox Way");
+  });
+
+  it("lets one slow source fail without taking the others down", async () => {
+    const store = await freshStore();
+    const summary = await runScan({
+      providers: [
+        slowProvider("mapbox", 20, [NEW_HAULER]),
+        {
+          ...fakeProvider("geoapify", []),
+          async search() {
+            await new Promise((r) => setTimeout(r, 10));
+            throw new SourceError("geoapify blew up", "geoapify", 500);
+          },
+        } as SourceProvider,
+      ],
+    });
+
+    assert.equal(summary.newLeads, 1);
+    assert.ok(summary.errors.some((e) => e.includes("blew up")));
+    assert.equal((await store.listLeads({})).rows.length, 1);
+  });
+});
+
+describe("territory boundaries", () => {
+  /** Norwood, MA and a hauler 60 km away in Worcester. */
+  const NORWOOD = { lat: 42.1945, lng: -71.1995 };
+  const WORCESTER = { lat: 42.2626, lng: -71.8023 };
+
+  async function geocodedStore() {
+    const store = await freshStore();
+    const [t] = await store.listTerritories();
+    await store.updateTerritory(t.id, { ...NORWOOD });
+    return store;
+  }
+
+  it("rejects a business outside the radius and says how far away it was", async () => {
+    // Mapbox's proximity only biases results, so an out-of-area business
+    // genuinely does come back and has to be filtered here.
+    const store = await geocodedStore();
+    const summary = await runScan({
+      providers: [
+        fakeProvider("mapbox", [
+          record({ name: "Faraway Hauling", phone: "508-555-0000", ...WORCESTER }),
+          record({ name: "Local Junk Guys", phone: "617-555-3333", lat: 42.2, lng: -71.21 }),
+        ]),
+      ],
+    });
+
+    assert.equal(summary.newLeads, 1, "only the local operator should be kept");
+    const names = (await store.listLeads({})).rows.map((l) => l.name);
+    assert.deepEqual(names, ["Local Junk Guys"]);
+    assert.ok(
+      summary.candidates.some((c) => /km from .* outside the .* radius/i.test(c.outcome)),
+      "the rejection must be explained, not silent",
+    );
+  });
+
+  it("keeps a business whose coordinates are unknown", async () => {
+    const store = await geocodedStore();
+    await runScan({
+      providers: [fakeProvider("mapbox", [record({ name: "No Coords Hauling", phone: "617-555-4444" })])],
+    });
+    assert.equal((await store.listLeads({})).rows.length, 1);
+  });
+
+  it("keeps everything when the territory has not been geocoded", async () => {
+    const store = await freshStore(); // no lat/lng set
+    await runScan({
+      providers: [fakeProvider("mapbox", [record({ name: "Faraway Hauling", phone: "508-555-0000", ...WORCESTER })])],
+    });
+    assert.equal(
+      (await store.listLeads({})).rows.length,
+      1,
+      "without a territory centre there is nothing to measure against",
+    );
+  });
+});
+
+describe("territory rotation", () => {
+  it("scans the least recently scanned territory first", async () => {
+    const store = await freshStore();
+    const [first] = await store.listTerritories();
+    await store.updateTerritory(first.id, { lastScannedAt: new Date().toISOString() });
+    const second = await store.createTerritory({
+      label: "Dedham",
+      area: "Dedham, MA",
+      state: "MA",
+      niches: ["junk_removal"],
+      radiusKm: 15,
+      enabled: true,
+    } as never);
+
+    const order: string[] = [];
+    await runScan({
+      providers: [
+        {
+          ...fakeProvider("mapbox", []),
+          async search(ctx) {
+            order.push(ctx.territory.label);
+            return [];
+          },
+        },
+      ],
+    });
+
+    // Dedham has never been scanned, so it must go first — otherwise a run
+    // that runs out of time always starves the same territories.
+    assert.deepEqual(order, ["Dedham", "Norwood"]);
+    assert.ok(second.id);
+  });
+
+  it("does not stamp a territory the run never reached", async () => {
+    const store = await freshStore();
+    await store.createTerritory({
+      label: "Dedham",
+      area: "Dedham, MA",
+      state: "MA",
+      niches: ["junk_removal"],
+      radiusKm: 15,
+      enabled: true,
+    } as never);
+
+    // Negative, not zero: a zero budget puts the deadline at exactly `now`,
+    // and the check is `>`, so a fast run slips past it inside one millisecond.
+    await runScan({ providers: [fakeProvider("mapbox", [NEW_HAULER])], budgetMs: -1000 });
+
+    const territories = await store.listTerritories();
+    const unscanned = territories.filter((t) => !t.lastScannedAt);
+    assert.ok(
+      unscanned.length >= 1,
+      "an unreached territory must stay unstamped, or it never gets its turn",
+    );
+  });
+});
+
 describe("runScan with the research pass", () => {
   it("scores a stated founding year as a strong new-business signal", async () => {
     const store = await freshStore();

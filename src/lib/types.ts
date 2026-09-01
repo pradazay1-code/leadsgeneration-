@@ -236,6 +236,11 @@ export interface ScanRunSummary {
     pagesEnriched: number;
     newBusinessHits: number;
   };
+  /**
+   * Searches spent confirming a business really has no website, turning the
+   * heaviest scoring signal from an assumption into a finding.
+   */
+  websiteChecks?: number;
 }
 
 export interface LeadFilters {

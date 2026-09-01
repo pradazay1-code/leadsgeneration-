@@ -136,7 +136,7 @@ Enforcement is covered by tests, including the concurrency case: `npm test`.
 ## Tests
 
 ```bash
-npm test     # 65 tests, no dependencies beyond Node
+npm test     # 95 tests, no dependencies beyond Node
 ```
 
 `tests/scan.e2e.test.ts` drives the **real** `runScan` against the **real** store —
@@ -180,7 +180,12 @@ research: 6 · OpenStreetMap: 0`), so a zero is never silent. Common causes:
   bar". Those were established businesses or franchises. Drop the minimum score slider
   to see them.
 - **Time budget reached** — scans stop cleanly at ~45s (Vercel's function ceiling) and
-  save what they found. Run again, or split big territories into individual towns.
+  save what they found. Sources are queried concurrently and territories are scanned
+  least-recently-first, so consecutive runs work through the whole list rather than
+  restarting on the same few towns.
+- **Out of area** — results are filtered to the territory radius. Mapbox's proximity
+  only *biases* results, so a search near Norwood really does return businesses from
+  across the state; the banner names anything dropped and how far away it was.
 
 ## Outreach sequences
 

@@ -76,6 +76,8 @@ export class SourceError extends Error {
   readonly source: SourceId;
   /** HTTP-ish status when known; auth/quota errors abort the provider for the run. */
   readonly status?: number;
+  /** Server-suggested wait before retrying, from a Retry-After header. */
+  retryAfterMs?: number | null;
 
   // Fields are assigned in the body rather than declared as constructor
   // parameter properties, which need a TypeScript transform this module can't
@@ -131,13 +133,83 @@ export const SOURCE_LABELS: Record<SourceId, string> = {
   manual: "Manual",
 };
 
-/** Shared fetch wrapper: UA header, timeout, JSON parse, typed errors. */
+/**
+ * Statuses worth trying again. A 429 or a 5xx is the upstream having a moment,
+ * not a verdict — but without a retry a single blip benched the source for the
+ * whole run, losing every result it would have returned. 401/403/404 are
+ * answers, and retrying them only wastes budget.
+ */
+function isTransient(status: number | undefined): boolean {
+  return status === 429 || status === 408 || (status !== undefined && status >= 500);
+}
+
+/** Honour Retry-After when the server sends one, within reason. */
+function retryAfterMs(res: Response): number | null {
+  const header = res.headers.get("retry-after");
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) return Math.min(seconds * 1000, 10_000);
+  const at = Date.parse(header);
+  return Number.isFinite(at) ? Math.min(Math.max(0, at - Date.now()), 10_000) : null;
+}
+
+/**
+ * Shared fetch wrapper: UA header, timeout, bounded retry, JSON parse, typed
+ * errors.
+ *
+ * Retries are deliberately few and short. The scan runs against a wall-clock
+ * budget on serverless, so a patient retry loop would spend the whole run
+ * waiting on one sulking provider and starve every other source.
+ */
 export async function fetchJson<T>(
   url: string,
-  init: RequestInit & { timeoutMs?: number },
+  init: RequestInit & { timeoutMs?: number; retries?: number },
   source: SourceId,
 ): Promise<T> {
-  const { timeoutMs = 25000, ...rest } = init;
+  const { timeoutMs = 25000, retries = 2, ...rest } = init;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await attemptFetch<T>(url, rest, timeoutMs, source);
+    } catch (err) {
+      lastError = err;
+
+      const status = err instanceof SourceError ? err.status : undefined;
+      const retryable = status === undefined ? isNetworkBlip(err) : isTransient(status);
+      if (!retryable || attempt === retries) throw err;
+
+      // 400ms, then 1200ms — enough to clear a rate-limit window without
+      // eating the scan's time budget.
+      const backoff =
+        (err instanceof SourceError && err.retryAfterMs) || 400 * Math.pow(3, attempt);
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+  }
+
+  throw lastError;
+}
+
+/** A dropped connection or a timeout, as opposed to a considered rejection. */
+function isNetworkBlip(err: unknown): boolean {
+  if (err instanceof SourceError && err.status !== undefined) return false;
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  // An abort raised by the caller's own signal must not be retried.
+  if (message.includes("timed out") || message.includes("timeout")) return true;
+  return (
+    message.includes("fetch failed") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up") ||
+    message.includes("network")
+  );
+}
+
+async function attemptFetch<T>(
+  url: string,
+  rest: RequestInit,
+  timeoutMs: number,
+  source: SourceId,
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -152,11 +224,13 @@ export async function fetchJson<T>(
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new SourceError(
+      const error = new SourceError(
         `${source} request failed (${res.status}): ${text.slice(0, 200)}`,
         source,
         res.status,
       );
+      error.retryAfterMs = retryAfterMs(res);
+      throw error;
     }
     return (await res.json()) as T;
   } catch (err) {
