@@ -91,14 +91,98 @@ function explain(source: SourceId, message: string): string {
  * against a real town, so "why did my scan return nothing" always has a
  * concrete answer.
  */
+/**
+ * Hard ceiling on any single probe.
+ *
+ * A source that can't answer in this long is a problem worth reporting, and
+ * reporting it is the entire job. Generous per-provider timeouts belong in a
+ * scan, which can afford to wait; a health check that waits is a health check
+ * that gets killed by the platform and tells you nothing.
+ */
+const PROBE_TIMEOUT_MS = 8_000;
+
+/** Whole-report ceiling, comfortably inside Vercel's 60s function limit. */
+const REPORT_BUDGET_MS = 25_000;
+
+/** Resolve with a marker instead of hanging past `ms`. */
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+): Promise<{ value?: T; timedOut?: true; error?: string; ms: number }> {
+  const t0 = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    const value = await Promise.race([
+      fn(controller.signal),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms + 250),
+      ),
+    ]);
+    return { value, ms: Date.now() - t0 };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (controller.signal.aborted || /abort|timed out/i.test(message)) {
+      return { timedOut: true, ms: Date.now() - t0 };
+    }
+    return { error: message, ms: Date.now() - t0 };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function runDiagnostics(probeArea = "Norwood, MA"): Promise<DiagnosticsReport> {
   const checks: CheckResult[] = [];
   // Record what each provider actually sends back for the duration of the
   // probes. Always stopped in the finally below, so a normal scan never pays
   // the cost of it.
   const samples = startResponseCapture();
+
+  // Environment and build are pure local reads and are the most valuable part
+  // of this report when something is wrong — so they are captured before any
+  // network call and returned even if every probe fails. Losing them to a
+  // slow provider is what made this endpoint useless exactly when it mattered.
+  const env = envReport();
+  const build = buildInfo();
+
+  const fallback = (): DiagnosticsReport => ({
+    ranAt: new Date().toISOString(),
+    probeArea,
+    checks,
+    canFindLeads: false,
+    env,
+    build,
+    samples,
+  });
+
   try {
-    return await probeEverything(probeArea, checks, samples);
+    const report = await Promise.race([
+      probeEverything(probeArea, checks, samples, env, build),
+      new Promise<DiagnosticsReport>((resolve) =>
+        setTimeout(() => {
+          checks.push({
+            id: "budget",
+            label: "Health check",
+            status: "warn",
+            detail: `Stopped after ${REPORT_BUDGET_MS / 1000}s. Some sources hadn't answered — the results above are what finished in time.`,
+            fix: "A source that slow is usually unreachable from this deployment, or the key is being rejected without a prompt response.",
+          });
+          resolve(fallback());
+        }, REPORT_BUDGET_MS),
+      ),
+    ]);
+    return report;
+  } catch (err) {
+    // Even a catastrophic failure must still hand back the environment
+    // report — that is the part that tells you whether your keys registered.
+    checks.push({
+      id: "diagnostics",
+      label: "Health check",
+      status: "fail",
+      detail: `The check itself failed: ${err instanceof Error ? err.message : String(err)}`,
+      fix: "The environment and build details below were still read successfully.",
+    });
+    return fallback();
   } finally {
     stopResponseCapture();
   }
@@ -108,6 +192,8 @@ async function probeEverything(
   probeArea: string,
   checks: CheckResult[],
   samples: Array<{ source: string; url: string; status: number; sample: string }>,
+  env: EnvReport,
+  build: BuildInfo,
 ): Promise<DiagnosticsReport> {
 
   /* ---------------------------------------------------------- storage --- */
@@ -160,8 +246,8 @@ async function probeEverything(
     leadsFound: 0,
   };
 
-  // Geocode once — only the Overpass source needs it.
-  const geo = await timed(() => geocodeArea(probeArea));
+  // Geocode once — only the radius-based sources need it.
+  const geo = await withTimeout(() => geocodeArea(probeArea), PROBE_TIMEOUT_MS);
   const geoOk = Boolean(geo.value);
   if (geoOk) {
     probeTerritory.lat = geo.value!.lat;
@@ -182,7 +268,9 @@ async function probeEverything(
 
   let anySourceWorked = false;
 
-  for (const provider of ALL_PROVIDERS) {
+  // Sources that can't run at all need no network, so they're reported first
+  // and excluded from the probe batch.
+  const probeable = ALL_PROVIDERS.filter((provider) => {
     if (!provider.isConfigured()) {
       checks.push({
         id: provider.id,
@@ -196,10 +284,10 @@ async function probeEverything(
               ? `Set ${provider.id === "yelp" ? "YELP_API_KEY" : provider.id === "geoapify" ? "GEOAPIFY_API_KEY" : provider.id === "web" ? "BRAVE_API_KEY" : "the API key"} and redeploy to enable.`
               : undefined,
       });
-      continue;
+      return false;
     }
 
-    if ((provider.id === "osm" || provider.id === "geoapify") && !geoOk) {
+    if (provider.needsCoordinates && !geoOk) {
       checks.push({
         id: provider.id,
         label: provider.label,
@@ -207,14 +295,49 @@ async function probeEverything(
         detail: "Enabled, but it needs coordinates and the geocoder failed, so it can't run.",
         fix: "Fix the geocoder first — set MAPBOX_ACCESS_TOKEN, or GEOAPIFY_API_KEY as a backup.",
       });
-      continue;
+      return false;
+    }
+    return true;
+  });
+
+  // Probed concurrently, each under a hard timeout. Run in series with the
+  // generous per-provider timeouts a scan uses, this endpoint could take over
+  // ten minutes and be killed by the platform long before it answered.
+  const probes = await Promise.all(
+    probeable.map((provider) => {
+      const niche = provider.supportsNiche("junk_removal") ? "junk_removal" : "real_estate";
+      return withTimeout(
+        (signal) => provider.search({ niche, territory: probeTerritory as never, limit: 5, signal }),
+        PROBE_TIMEOUT_MS,
+      ).then((result) => ({ provider, niche, result }));
+    }),
+  );
+
+  for (const { provider, niche, result } of probes) {
+    const probe = {
+      ms: result.ms,
+      value: result.value,
+      error: result.error,
+      quotaPaused: undefined as string | undefined,
+    };
+
+    // A quota block surfaces as a rejection, so it's recovered from the message.
+    if (result.error && /cap reached|quota|disabled \(cap set to 0\)/i.test(result.error)) {
+      probe.quotaPaused = result.error;
+      probe.error = undefined;
     }
 
-    // Probe with the niche this provider actually supports.
-    const niche = provider.supportsNiche("junk_removal") ? "junk_removal" : "real_estate";
-    const probe = await timed(() =>
-      provider.search({ niche, territory: probeTerritory as never, limit: 5 }),
-    );
+    if (result.timedOut) {
+      checks.push({
+        id: provider.id,
+        label: provider.label,
+        status: "fail",
+        ms: result.ms,
+        detail: `No response within ${PROBE_TIMEOUT_MS / 1000}s.`,
+        fix: "Usually means this host is unreachable from your deployment, or the key is being held rather than rejected. Check the provider's status page.",
+      });
+      continue;
+    }
 
     if (probe.quotaPaused) {
       checks.push({
@@ -274,26 +397,31 @@ async function probeEverything(
       fix: "Set FIRECRAWL_API_KEY and redeploy.",
     });
   } else {
-    const probe = await timed(() =>
-      firecrawlSearch(`"junk removal" "${probeArea}"`, { limit: 5 }),
+    const probe = await withTimeout(
+      (signal) => firecrawlSearch(`"junk removal" "${probeArea}"`, { limit: 5, signal }),
+      PROBE_TIMEOUT_MS,
     );
     const hits = probe.value?.length ?? 0;
     if (hits > 0) anySourceWorked = true;
     checks.push({
       id: "firecrawl",
       label: "Deep research",
-      status: probe.error ? "fail" : hits > 0 ? "ok" : "warn",
+      status: probe.timedOut || probe.error ? "fail" : hits > 0 ? "ok" : "warn",
       ms: probe.ms,
-      detail: probe.error
-        ? `Live test search failed: ${probe.error.slice(0, 200)}`
-        : hits > 0
-          ? `Working — returned ${hits} result${hits === 1 ? "" : "s"} for ${probeArea}.`
-          : "Reachable, but the test search returned nothing. Most often that means the credit balance is spent.",
-      fix: probe.error
-        ? explain("firecrawl", probe.error)
-        : hits > 0
-          ? undefined
-          : "Check your remaining credits in the Firecrawl dashboard.",
+      detail: probe.timedOut
+        ? `No response within ${PROBE_TIMEOUT_MS / 1000}s.`
+        : probe.error
+          ? `Live test search failed: ${probe.error.slice(0, 200)}`
+          : hits > 0
+            ? `Working — returned ${hits} result${hits === 1 ? "" : "s"} for ${probeArea}.`
+            : "Reachable, but the test search returned nothing. Most often that means the credit balance is spent.",
+      fix: probe.timedOut
+        ? "Unreachable from this deployment, or the request is being held rather than answered."
+        : probe.error
+          ? explain("firecrawl", probe.error)
+          : hits > 0
+            ? undefined
+            : "Check your remaining credits in the Firecrawl dashboard.",
     });
   }
 
@@ -302,8 +430,8 @@ async function probeEverything(
     probeArea,
     checks,
     canFindLeads: anySourceWorked,
-    env: envReport(),
-    build: buildInfo(),
+    env,
+    build,
     samples,
   };
 }

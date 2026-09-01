@@ -229,6 +229,11 @@ export async function fetchJson<T>(
     } catch (err) {
       lastError = err;
 
+      // A caller that gave up must not have its request retried behind its
+      // back. Without this a health check with a 8-second budget could sit
+      // through three full timeouts of a provider that never answers.
+      if (rest.signal?.aborted) throw err;
+
       const status = err instanceof SourceError ? err.status : undefined;
       const retryable = status === undefined ? isNetworkBlip(err) : isTransient(status);
       if (!retryable || attempt === retries) throw err;
