@@ -822,16 +822,30 @@ export class MemoryStore implements Store {
     return state().usage.get(`${key}|${periodType}|${period}`) ?? 0;
   }
 
-  async incrementUsage(key: string, count: number): Promise<void> {
+  async incrementUsage(key: string, count: number): Promise<{ monthly: number; daily: number }> {
     const s = state();
     const now = new Date().toISOString();
+    const totals: Record<string, number> = {};
     for (const [type, period] of [
       ["month", now.slice(0, 7)],
       ["day", now.slice(0, 10)],
     ] as const) {
       const k = `${key}|${type}|${period}`;
-      s.usage.set(k, (s.usage.get(k) ?? 0) + count);
+      // Clamped so a refund can't drive the counter below zero.
+      const next = Math.max(0, (s.usage.get(k) ?? 0) + count);
+      s.usage.set(k, next);
+      totals[type] = next;
     }
+    return { monthly: totals.month ?? 0, daily: totals.day ?? 0 };
+  }
+
+  async countLeadsByTerritory(): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    for (const lead of state().leads.values()) {
+      if (!lead.territoryId) continue;
+      counts.set(lead.territoryId, (counts.get(lead.territoryId) ?? 0) + 1);
+    }
+    return counts;
   }
 
   /* --------------------------------------------------------- identities */

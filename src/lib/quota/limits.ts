@@ -227,33 +227,46 @@ export function evaluateQuota(
  */
 export interface UsageCounter {
   getUsage(key: QuotaKey, periodType: "month" | "day", period: string): Promise<number>;
-  incrementUsage(key: QuotaKey, count: number): Promise<void>;
+  /** Atomically add `count` and return the resulting totals. Negative refunds. */
+  incrementUsage(key: QuotaKey, count: number): Promise<{ monthly: number; daily: number }>;
 }
 
 /**
- * Reserve budget against a counter: read, decide, and only then increment.
+ * Reserve budget against a counter.
  *
- * The increment happens before the HTTP request is made, which is the point —
- * if the request is what incremented the counter, concurrent scans would each
- * read the same pre-call total and collectively blow through the cap.
+ * Increments *first*, then judges the totals it got back, refunding when the
+ * call would have taken usage past the cap. Reading first and incrementing
+ * after would leave a window in which two scans both read the same under-cap
+ * total and both proceed — which is exactly how a "hard" cap quietly becomes a
+ * bill. The increment is the only atomic operation available, so the decision
+ * is made from its result.
+ *
+ * The reservation happens before the HTTP request, so an aborted or failed
+ * request costs budget rather than risking an overrun. That is the safe
+ * direction to err in.
  */
 export async function reserveWith(
   counter: UsageCounter,
   key: QuotaKey,
   count = 1,
-  now = new Date(),
 ): Promise<QuotaDecision> {
   const cap = effectiveCap(key);
-  const { month, day } = currentPeriods(now);
 
-  const [monthly, daily] = await Promise.all([
-    counter.getUsage(key, "month", month),
-    counter.getUsage(key, "day", day),
-  ]);
+  // A disabled quota is refused without touching the counter — there's no
+  // point recording usage against a source that is never allowed to run.
+  if (cap.monthly === 0 || cap.daily === 0) {
+    return evaluateQuota(key, { monthly: 0, daily: 0 }, cap, count);
+  }
 
-  const decision = evaluateQuota(key, { monthly, daily }, cap, count);
-  if (!decision.ok) return decision;
+  const after = await counter.incrementUsage(key, count);
+  // Totals as they stood before this reservation, derived from our own delta
+  // rather than a separate read that another caller could have changed.
+  const before = { monthly: after.monthly - count, daily: after.daily - count };
 
-  await counter.incrementUsage(key, count);
+  const decision = evaluateQuota(key, before, cap, count);
+  if (!decision.ok) {
+    await counter.incrementUsage(key, -count);
+    return decision;
+  }
   return { ok: true };
 }

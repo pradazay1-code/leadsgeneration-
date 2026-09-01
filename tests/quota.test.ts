@@ -22,24 +22,34 @@ import {
   type UsageCounter,
 } from "../src/lib/quota/limits.ts";
 
-/** Minimal stand-in for the real store's usage counters. */
-function fakeCounter(): UsageCounter & { calls: number } {
+/**
+ * Minimal stand-in for the real store's usage counters, matching the contract
+ * the Postgres implementation provides: the increment is atomic and returns
+ * the resulting totals.
+ */
+function fakeCounter(): UsageCounter & { calls: number; refunds: number } {
   const counts = new Map<string, number>();
   return {
     calls: 0,
+    refunds: 0,
     async getUsage(key, periodType, period) {
       return counts.get(`${key}|${periodType}|${period}`) ?? 0;
     },
     async incrementUsage(key, count) {
-      this.calls += 1;
+      if (count < 0) this.refunds += 1;
+      else this.calls += 1;
       const { month, day } = currentPeriods();
+      const totals: Record<string, number> = {};
       for (const [periodType, period] of [
         ["month", month],
         ["day", day],
       ] as const) {
         const k = `${key}|${periodType}|${period}`;
-        counts.set(k, (counts.get(k) ?? 0) + count);
+        const next = Math.max(0, (counts.get(k) ?? 0) + count);
+        counts.set(k, next);
+        totals[periodType] = next;
       }
+      return { monthly: totals.month ?? 0, daily: totals.day ?? 0 };
     },
   };
 }
@@ -172,25 +182,44 @@ describe("reserveWith", () => {
 
     const granted = results.filter((r) => r.ok).length;
     assert.equal(granted, 3, "exactly the capped number of calls may proceed");
-    assert.equal(counter.calls, 3, "no counter increment happens for a refused call");
 
     const { day } = currentPeriods();
-    assert.equal(await counter.getUsage("mapbox_search", "day", day), 3);
+    assert.equal(
+      await counter.getUsage("mapbox_search", "day", day),
+      3,
+      "a refused reservation must leave no residue on the counter",
+    );
   });
 
-  it("increments before returning, so concurrent reservations can't both win the last slot", async () => {
+  it("holds the cap when every reservation is made concurrently", async () => {
+    // The real race: a cron scan and a manual scan reserving at the same
+    // moment. Read-then-increment let both read the same under-cap total and
+    // both proceed; incrementing first and judging the returned value is what
+    // makes the cap hold.
+    process.env.MAPBOX_SEARCH_DAILY_CAP = "5";
+    process.env.MAPBOX_SEARCH_MONTHLY_CAP = "1000";
+    const counter = fakeCounter();
+
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () => reserveWith(counter, "mapbox_search")),
+    );
+
+    assert.equal(results.filter((r) => r.ok).length, 5, "exactly the cap, no matter the concurrency");
+    const { day } = currentPeriods();
+    assert.equal(await counter.getUsage("mapbox_search", "day", day), 5);
+  });
+
+  it("refunds the reservation it just made when the call would breach the cap", async () => {
     process.env.MAPBOX_SEARCH_DAILY_CAP = "1";
     process.env.MAPBOX_SEARCH_MONTHLY_CAP = "1000";
     const counter = fakeCounter();
 
-    // Sequential awaits model what the providers actually do. The guarantee
-    // under test is that the reservation is what consumes budget: once the
-    // first call returns ok, the second sees the spent slot.
-    const first = await reserveWith(counter, "mapbox_search");
-    const second = await reserveWith(counter, "mapbox_search");
+    assert.equal((await reserveWith(counter, "mapbox_search")).ok, true);
+    assert.equal((await reserveWith(counter, "mapbox_search")).ok, false);
 
-    assert.equal(first.ok, true);
-    assert.equal(second.ok, false);
+    assert.equal(counter.refunds, 1, "the refused reservation is given back");
+    const { day } = currentPeriods();
+    assert.equal(await counter.getUsage("mapbox_search", "day", day), 1);
   });
 
   it("charges the requested count, not one per call", async () => {
@@ -224,23 +253,29 @@ describe("reserveWith", () => {
     assert.equal(counter.calls, 0);
   });
 
-  it("rolls the daily counter over at the UTC date boundary", async () => {
-    process.env.MAPBOX_SEARCH_DAILY_CAP = "1";
+  it("keeps a refund from driving a counter negative", async () => {
+    process.env.MAPBOX_SEARCH_DAILY_CAP = "2";
     process.env.MAPBOX_SEARCH_MONTHLY_CAP = "1000";
     const counter = fakeCounter();
-    const periods: string[] = [];
-    const spy: UsageCounter = {
-      getUsage: (k, t, p) => {
-        if (t === "day") periods.push(p);
-        return counter.getUsage(k, t, p);
-      },
-      incrementUsage: (k, c) => counter.incrementUsage(k, c),
-    };
 
-    await reserveWith(spy, "mapbox_search", 1, new Date("2026-08-31T23:59:00Z"));
-    await reserveWith(spy, "mapbox_search", 1, new Date("2026-09-01T00:01:00Z"));
+    for (let i = 0; i < 6; i += 1) await reserveWith(counter, "mapbox_search");
 
-    assert.deepEqual(periods, ["2026-08-31", "2026-09-01"]);
+    const { day, month } = currentPeriods();
+    assert.equal(await counter.getUsage("mapbox_search", "day", day), 2);
+    assert.ok((await counter.getUsage("mapbox_search", "month", month)) >= 0);
+  });
+});
+
+describe("currentPeriods", () => {
+  it("rolls the daily key over at the UTC date boundary", () => {
+    assert.deepEqual(currentPeriods(new Date("2026-08-31T23:59:00Z")), {
+      month: "2026-08",
+      day: "2026-08-31",
+    });
+    assert.deepEqual(currentPeriods(new Date("2026-09-01T00:01:00Z")), {
+      month: "2026-09",
+      day: "2026-09-01",
+    });
   });
 });
 

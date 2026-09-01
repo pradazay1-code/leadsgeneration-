@@ -131,7 +131,23 @@ and sail past the cap together.
 - Live counters, caps, and reset dates are on **Settings → API usage**.
 - Every cap is overridable by env var (see `.env.example`) if you want a tighter budget.
 
-The enforcement logic is covered by tests: `npm test`.
+Enforcement is covered by tests, including the concurrency case: `npm test`.
+
+## Tests
+
+```bash
+npm test     # 65 tests, no dependencies beyond Node
+```
+
+`tests/scan.e2e.test.ts` drives the **real** `runScan` against the **real** store —
+merging, identity, scoring, franchise rejection, quota benching, persistence and re-scan
+behaviour are all production code. Only the providers are stand-ins, since the third-party
+APIs are the one part CI can't reach and the least likely thing to be wrong; the bugs live
+in how their results get combined.
+
+A resolver hook (`tests/ts-resolver.mjs`) teaches Node's test runner the extensionless
+imports and `@/` alias that Next's bundler handles, so the tests import the shipping
+modules rather than a copy of them.
 
 ## Setup
 

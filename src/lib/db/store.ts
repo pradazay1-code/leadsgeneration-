@@ -187,11 +187,19 @@ export interface Store {
   /* ---------------------------------------------------------- dashboard */
   dashboard(): Promise<DashboardSummary>;
 
+  /** Current number of leads per territory id. */
+  countLeadsByTerritory(): Promise<Map<string, number>>;
+
   /* -------------------------------------------------------- api quotas */
   /** Calls recorded for a provider in a period ("month"/"day" + period key). */
   getUsage(key: string, periodType: "month" | "day", period: string): Promise<number>;
-  /** Record `count` calls against both the current month and day. */
-  incrementUsage(key: string, count: number): Promise<void>;
+  /**
+   * Add `count` to both the current month and day, returning the resulting
+   * totals. Must be atomic: the returned numbers are what make it safe for
+   * two scans to reserve budget at the same time. A negative `count` refunds
+   * a reservation that turned out to exceed the cap.
+   */
+  incrementUsage(key: string, count: number): Promise<{ monthly: number; daily: number }>;
 
   /* --------------------------------------------------------- identities */
   /**

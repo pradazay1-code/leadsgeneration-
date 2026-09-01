@@ -73,14 +73,18 @@ export interface SourceProvider {
 }
 
 export class SourceError extends Error {
-  constructor(
-    message: string,
-    readonly source: SourceId,
-    /** HTTP-ish status when known; auth/quota errors abort the provider for the run. */
-    readonly status?: number,
-  ) {
+  readonly source: SourceId;
+  /** HTTP-ish status when known; auth/quota errors abort the provider for the run. */
+  readonly status?: number;
+
+  // Fields are assigned in the body rather than declared as constructor
+  // parameter properties, which need a TypeScript transform this module can't
+  // assume — it has to load under plain type-stripping too.
+  constructor(message: string, source: SourceId, status?: number) {
     super(message);
     this.name = "SourceError";
+    this.source = source;
+    this.status = status;
   }
 
   get fatal(): boolean {

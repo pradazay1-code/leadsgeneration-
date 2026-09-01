@@ -3,11 +3,17 @@ import { getStore } from "./db";
 import type { LeadUpsert } from "./db/store";
 import { mergeRecords, type MergedBusiness } from "./merge";
 import { geocodeArea } from "./sources/geocode";
-import { SourceError, configuredProviders, type SourceRecord } from "./sources";
-import { runResearch, type ResearchStats } from "./research/agent";
+import { SourceError, configuredProviders, type SourceProvider, type SourceRecord } from "./sources";
+import {
+  runResearch,
+  type ResearchContext,
+  type ResearchResult,
+  type ResearchStats,
+} from "./research/agent";
 import { firecrawlConfigured } from "./research/firecrawl";
 import { QuotaExceededError } from "./quota";
 import { normaliseHost, scoreBusiness } from "./scoring";
+import { scopeIdentityKeys } from "./identity";
 import type {
   NicheId,
   ScanCandidate,
@@ -47,6 +53,15 @@ export interface ScanOptions {
   perSourceLimit?: number;
   /** Wall-clock budget; the run stops early and saves what it has. */
   budgetMs?: number;
+  /**
+   * Override the provider roster. Production never passes this — it exists so
+   * the pipeline can be driven end to end against stand-in providers, which is
+   * the only way to test merging, scoring and persistence without depending on
+   * six third-party APIs being reachable and returning what they did last week.
+   */
+  providers?: SourceProvider[];
+  /** Override the research pass, for the same reason. */
+  research?: (ctx: ResearchContext) => Promise<ResearchResult>;
 }
 
 function toUpsert(
@@ -77,10 +92,10 @@ function toUpsert(
 
   return {
     upsert: {
-      sourceId: `m:${niche}:${biz.identityKey}`,
+      sourceId: scopeIdentityKeys(niche, [biz.identityKey])[0],
       // Every key this business matched on, namespaced per niche so a hauler
       // and an agent sharing an office phone stay separate leads.
-      identityKeys: biz.identityKeys.map((k) => `m:${niche}:${k}`),
+      identityKeys: scopeIdentityKeys(niche, biz.identityKeys),
       source: biz.primarySource,
       sources: biz.sources,
       sourceRefs: biz.sourceRefs,
@@ -170,7 +185,8 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   const errors: string[] = [];
   const tally = new SourceTally();
 
-  const providers = configuredProviders();
+  const providers = options.providers ?? configuredProviders();
+  const research = options.research ?? runResearch;
   if (!providers.length) {
     const summary: ScanRunSummary = {
       startedAt,
@@ -225,7 +241,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
   // Providers that hit an auth/quota wall get benched for the rest of the run.
   const benched = new Set<SourceId>();
   const sourcesUsed = new Set<SourceId>();
-  const researchEnabled = firecrawlConfigured();
+  const researchEnabled = Boolean(options.research) || firecrawlConfigured();
   const researchStats: ResearchStats[] = [];
   let placesInspected = 0;
   let skipped = 0;
@@ -327,7 +343,7 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
         const stat = tally.get("firecrawl");
         stat.queries += 1;
         try {
-          const research = await runResearch({
+          const found = await research({
             niche,
             territory: terr,
             limit: perSourceLimit,
@@ -335,12 +351,12 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
             deadline: Math.min(deadline, Date.now() + RESEARCH_SLICE_MS),
           });
           checkedSources.push("firecrawl");
-          stat.returned += research.records.length;
-          if (research.records.length) sourcesUsed.add("firecrawl");
-          records.push(...research.records);
-          placesInspected += research.records.length;
-          researchStats.push(research.stats);
-          for (const n of research.notes) if (!errors.includes(n)) errors.push(n);
+          stat.returned += found.records.length;
+          if (found.records.length) sourcesUsed.add("firecrawl");
+          records.push(...found.records);
+          placesInspected += found.records.length;
+          researchStats.push(found.stats);
+          for (const n of found.notes) if (!errors.includes(n)) errors.push(n);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (err instanceof QuotaExceededError) {
@@ -416,11 +432,16 @@ export async function runScan(options: ScanOptions = {}): Promise<ScanRunSummary
     });
   }
 
+  // Set from the actual lead count rather than accumulating this run's total.
+  // Adding each time counted the same businesses again on every re-scan, so
+  // the figure climbed forever and meant nothing; reading it back also repairs
+  // territories whose totals were already inflated.
+  const leadCounts = await store.countLeadsByTerritory();
   await Promise.all(
     targets.map((t) =>
       store.updateTerritory(t.id, {
         lastScannedAt: now,
-        leadsFound: t.leadsFound + (perTerritoryCount.get(t.id) ?? 0),
+        leadsFound: leadCounts.get(t.id) ?? 0,
       }),
     ),
   );

@@ -96,11 +96,14 @@ export type { QuotaKey, QuotaDecision, UsageCounter } from "./limits";
 
 /** Raised when a provider is asked to run with no budget left. */
 export class QuotaExceededError extends Error {
-  constructor(
-    message: string,
-    readonly quotaKey: QuotaKey,
-  ) {
+  // Assigned in the body rather than declared as a constructor parameter
+  // property: those need a TypeScript transform, and this module has to load
+  // under plain type-stripping runtimes (the test runner among them).
+  readonly quotaKey: QuotaKey;
+
+  constructor(message: string, quotaKey: QuotaKey) {
     super(message);
     this.name = "QuotaExceededError";
+    this.quotaKey = quotaKey;
   }
 }

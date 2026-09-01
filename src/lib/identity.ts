@@ -191,6 +191,19 @@ export function canonicalIdentity(rec: IdentityInput): string | null {
 }
 
 /**
+ * Namespace an identity key to a niche.
+ *
+ * A junk hauler and an estate agent sharing an office phone number are two
+ * different leads, so keys are scoped before they reach storage. Every place
+ * that reads or writes lead identities must go through here — a lookup that
+ * forgets the prefix silently matches nothing, which looks exactly like
+ * "this business is new" and quietly defeats deduplication.
+ */
+export function scopeIdentityKeys(niche: string, keys: string[]): string[] {
+  return keys.map((k) => `m:${niche}:${k}`);
+}
+
+/**
  * Group items that share any identity key.
  *
  * Union-find rather than a single-key map, because identity is transitive: a

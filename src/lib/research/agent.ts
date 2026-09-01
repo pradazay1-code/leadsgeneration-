@@ -3,7 +3,7 @@ import type { NicheId, Territory } from "../types";
 import type { SourceRecord } from "../sources/types";
 import { getStore } from "../db";
 import type { ResearchTargetInput } from "../db/store";
-import { apexDomain, identityKeysFor, isSharedHost } from "../identity";
+import { apexDomain, identityKeysFor, isSharedHost, scopeIdentityKeys } from "../identity";
 import { extractBusiness, firecrawlConfigured, search, type SearchHit } from "./firecrawl";
 import { buildQueryPlan, searchLocation, type QueryPlanItem } from "./queries";
 import { detectFranchise } from "../scoring";
@@ -104,6 +104,11 @@ interface Candidate {
   angle: string;
   listingOnly: boolean;
   name: string;
+  /**
+   * Phone number visible in the search snippet. Free, and the strongest
+   * identity signal available before deciding whether to spend on this page.
+   */
+  phoneHint: string | null;
   /** Launch language seen in the snippet, before any page is fetched. */
   snippetSaysNew: boolean;
 }
@@ -132,6 +137,7 @@ function toCandidates(hits: SearchHit[], item: QueryPlanItem, niche: NicheId): C
       angle: item.angle,
       listingOnly: item.listingOnly ?? false,
       name,
+      phoneHint: phoneFromText(`${hit.description} ${hit.markdown ?? ""}`),
       snippetSaysNew: looksNewFromText(`${hit.title} ${hit.description}`),
     });
   }
@@ -240,13 +246,18 @@ export async function runResearch(ctx: ResearchContext): Promise<ResearchResult>
   // ---- Stage 2: filter, before spending anything ---------------------------
   // This is the step that keeps the engine from handing back the same
   // businesses week after week.
+  const city = territory.area.split(",")[0]?.trim() || null;
+  // Keys must be scoped exactly as storage scopes them, or the lookup silently
+  // matches nothing and every known business reads as brand new.
+  const keysFor = (c: Candidate) =>
+    scopeIdentityKeys(
+      niche,
+      identityKeysFor({ name: c.name, phone: c.phoneHint, city, website: c.hit.url }),
+    );
+
   const [alreadyResearched, knownBusinesses] = await Promise.all([
     store.seenResearchUrls(candidates.map((c) => c.hit.url)),
-    store.resolveIdentities(
-      candidates.flatMap((c) =>
-        identityKeysFor({ name: c.name, city: territory.area.split(",")[0] ?? null, website: c.hit.url }),
-      ),
-    ),
+    store.resolveIdentities(candidates.flatMap(keysFor)),
   ]);
 
   const fresh: Candidate[] = [];
@@ -255,12 +266,7 @@ export async function runResearch(ctx: ResearchContext): Promise<ResearchResult>
       stats.skippedAlreadyResearched += 1;
       continue;
     }
-    const keys = identityKeysFor({
-      name: candidate.name,
-      city: territory.area.split(",")[0] ?? null,
-      website: candidate.hit.url,
-    });
-    if (keys.some((k) => knownBusinesses.has(k))) {
+    if (keysFor(candidate).some((k) => knownBusinesses.has(k))) {
       stats.skippedKnownBusiness += 1;
       continue;
     }

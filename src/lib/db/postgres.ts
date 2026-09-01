@@ -535,6 +535,15 @@ export class PostgresStore implements Store {
         researched_at = now()`;
   }
 
+  async countLeadsByTerritory(): Promise<Map<string, number>> {
+    await this.init();
+    const sql = client();
+    const rows = await sql<Row[]>`
+      SELECT territory_id, count(*)::int AS n
+      FROM leads WHERE territory_id IS NOT NULL GROUP BY territory_id`;
+    return new Map(rows.map((r) => [String(r.territory_id), Number(r.n)]));
+  }
+
   async researchStats(): Promise<{ total: number; converted: number }> {
     await this.init();
     const sql = client();
@@ -909,7 +918,7 @@ export class PostgresStore implements Store {
     return crm.getUsage(client(), key, periodType, period);
   }
 
-  async incrementUsage(key: string, count: number): Promise<void> {
+  async incrementUsage(key: string, count: number): Promise<{ monthly: number; daily: number }> {
     await this.init();
     return crm.incrementUsage(client(), key, count);
   }

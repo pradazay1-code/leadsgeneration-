@@ -841,14 +841,30 @@ export async function getUsage(
  * so concurrent serverless invocations can't lose increments and overshoot the
  * free tier.
  */
-export async function incrementUsage(sql: Sql, key: string, count: number): Promise<void> {
+export async function incrementUsage(
+  sql: Sql,
+  key: string,
+  count: number,
+): Promise<{ monthly: number; daily: number }> {
   const now = new Date().toISOString();
   const month = now.slice(0, 7);
   const day = now.slice(0, 10);
-  await sql`
+  const rows = await sql<Row[]>`
+    -- Returns the resulting totals so the caller can decide from a value only
+    -- it could have produced; a separate SELECT would race.
+    -- GREATEST keeps a refund from driving a counter negative.
     INSERT INTO api_usage (quota_key, period_type, period, count, updated_at)
-    VALUES (${key}, 'month', ${month}, ${count}, now()),
-           (${key}, 'day',   ${day},   ${count}, now())
+    VALUES (${key}, 'month', ${month}, ${Math.max(0, count)}, now()),
+           (${key}, 'day',   ${day},   ${Math.max(0, count)}, now())
     ON CONFLICT (quota_key, period_type, period)
-    DO UPDATE SET count = api_usage.count + EXCLUDED.count, updated_at = now()`;
+    DO UPDATE SET count = GREATEST(0, api_usage.count + ${count}), updated_at = now()
+    RETURNING period_type, count`;
+
+  let monthly = 0;
+  let daily = 0;
+  for (const r of rows) {
+    if (r.period_type === "month") monthly = Number(r.count);
+    else daily = Number(r.count);
+  }
+  return { monthly, daily };
 }

@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test 'tests/*.test.ts'"
+    "test": "node --experimental-strip-types --conditions=react-server --import ./tests/register.mjs --test 'tests/*.test.ts'"
   },
   "dependencies": {
     "lucide-react": "^0.469.0",
