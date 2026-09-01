@@ -46,6 +46,47 @@ interface StatsResponse {
   recentScans: ScanRunSummary[];
   providers: ProviderStatus[];
   storeKind: string;
+  territories?: { total: number; enabled: number };
+}
+
+/**
+ * Name the one thing standing between the user and their first lead.
+ *
+ * An empty list has several possible causes that look identical, and "finish
+ * setup" leaves you to guess which. The order matters: a scan with no
+ * territory returns instantly having searched nothing, which reads like the
+ * app is broken when it is simply waiting to be told where to look.
+ */
+function nextSetupStep(meta: StatsResponse): { title: string; body: string } {
+  const scanned = meta.recentScans.length > 0;
+  const enabledTerritories = meta.territories?.enabled ?? 0;
+  const connected = meta.providers.filter((p) => p.configured && p.needsKey).length;
+
+  if (enabledTerritories === 0) {
+    return {
+      title: "Add a town before scanning — there's nowhere to search yet",
+      body: "A scan sweeps the territories you choose, so with none set it finishes instantly having looked at nothing. Open Territories and add one, e.g. “Norwood, MA”, then hit Scan now.",
+    };
+  }
+
+  if (connected === 0) {
+    return {
+      title: "No search source connected — scans can only use the keyless ones",
+      body: "The free OpenStreetMap sources cover a small share of US small businesses, and almost no junk removal. Add MAPBOX_ACCESS_TOKEN and FIRECRAWL_API_KEY in Vercel, redeploy, then scan. The system check below confirms what the app can actually see.",
+    };
+  }
+
+  if (!scanned) {
+    return {
+      title: "Ready to go — run your first scan",
+      body: `${enabledTerritories} territor${enabledTerritories === 1 ? "y" : "ies"} and ${connected} connected source${connected === 1 ? "" : "s"}. Hit Scan now; the first sweep takes up to a minute.`,
+    };
+  }
+
+  return {
+    title: "Scans have run but nothing cleared the bar yet",
+    body: "This app only ever shows real businesses it finds; it never invents sample data. The scan banner breaks down what each source returned and why candidates were filtered — widen the radius, add towns, or lower the minimum score to see more.",
+  };
 }
 
 const SOURCE_LABEL: Record<string, string> = {
@@ -291,8 +332,7 @@ export function LeadsWorkspace() {
       {meta && meta.stats.total === 0 && !scanning ? (
         <Banner
           tone="warn"
-          title="No leads yet — finish setup, then run a scan"
-          body="This app only ever shows real businesses it finds; it never invents sample data. Run the system check below to see exactly what still needs connecting."
+          {...nextSetupStep(meta)}
         />
       ) : null}
 

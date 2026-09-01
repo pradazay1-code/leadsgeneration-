@@ -10,10 +10,11 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const store = await getStore();
-    const [stats, scans, quotas] = await Promise.all([
+    const [stats, scans, quotas, territories] = await Promise.all([
       store.stats(),
       store.recentScans(5),
       allQuotas(),
+      store.listTerritories(),
     ]);
 
     return NextResponse.json({
@@ -24,6 +25,12 @@ export async function GET() {
       quotas,
       storeKind: store.kind,
       build: buildInfo(),
+      // Counted so the empty state can name the actual next step rather than
+      // saying "finish setup" and leaving you to guess which part.
+      territories: {
+        total: territories.length,
+        enabled: territories.filter((t) => t.enabled).length,
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load stats";
