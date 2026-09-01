@@ -214,8 +214,38 @@ owner-operators, and a fast-track for leads with no website at all.
   lead is marked won/lost/ignored, nothing goes out on Sundays or outside 8am–7pm local,
   and a per-run cap (`OUTREACH_DAILY_CAP`, default 50) means a misconfigured sequence
   can't blast a whole territory. Failed sends defer and retry rather than skipping a touch.
-- Steps fire via cron three times a day, so anything deferred outside business hours gets
-  picked up. You can also hit **Run due steps now** on the Sequences page.
+- Steps fire via cron once a day at **16:00 UTC** (11am Eastern / 8am Pacific). That hour
+  is not arbitrary — see the scheduling note below. You can also hit **Run due steps now**
+  on the Sequences page any time, which is not cron-limited.
+
+## Scheduling on Vercel Hobby
+
+Hobby runs **at most two cron jobs, each at most once a day**. A schedule like
+`0 13,17,21 * * *` fires three times and Vercel rejects the whole deployment — which
+costs you a deploy, not just a cron.
+
+There's a second trap that Vercel will happily *accept*: the outreach runner refuses to
+send outside 8am–7pm local (`OUTREACH_TIMEZONE_OFFSET`, default `-5`). On a once-daily
+schedule, a cron outside that window defers every step to the next day — and does the
+same thing tomorrow. Outreach would never send, with nothing in the UI explaining why.
+16:00 UTC lands inside the window from Eastern through Pacific.
+
+`npm test` checks both rules against `vercel.json`, so a bad schedule fails locally in
+seconds instead of burning a deployment.
+
+**On Pro**, crons can run as often as you like. Sensible upgrade: sequences at
+`0 13,16,20 * * *` and the scan at `0 7,15 * * *`. Change `vercel.json`, and raise
+`MAX_CRONS` in `tests/vercel-config.test.ts`.
+
+### Getting more scanning out of one daily cron
+
+Each run stops at ~45s (Vercel's function ceiling). To make that count, territories are
+scanned **least-recently-first**, so consecutive days work through the whole list rather
+than restarting on the same towns. Sources are queried concurrently, so a run costs the
+slowest provider rather than the sum of all of them.
+
+**Scan now** in the UI is not cron-limited — run it as often as you want. The daily cron
+is the floor, not the ceiling.
 
 ## What you get
 
